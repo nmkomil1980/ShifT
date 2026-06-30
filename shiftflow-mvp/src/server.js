@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, audit, ensureGeneralChat } from './database.js';
+import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendToUsers } from './push.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -90,6 +91,17 @@ async function api(req,res,url) {
       String(d.name??user.name).slice(0,100),String(d.jobTitle??user.job_title).slice(0,100),String(d.phone??user.phone).slice(0,40),user.id);
     audit(user,'update','profile',user.id);
     return json(res,200,{user:cleanUser({...user,name:d.name??user.name,job_title:d.jobTitle??user.job_title,phone:d.phone??user.phone})});
+  }
+  if(pathname==='/api/push/vapid-public-key'&&req.method==='GET') {
+    return json(res,200,{publicKey:vapidPublicKey});
+  }
+  if(pathname==='/api/push/subscribe'&&req.method==='POST') {
+    const d=await body(req);
+    if(!d.subscription||!d.subscription.endpoint) return fail(res,422,'Некорректная подписка');
+    saveSubscription(user.id,d.subscription); return json(res,201,{ok:true});
+  }
+  if(pathname==='/api/push/unsubscribe'&&req.method==='POST') {
+    const d=await body(req); if(d.endpoint) removeSubscription(d.endpoint); return json(res,200,{ok:true});
   }
   if(pathname==='/api/organization'&&req.method==='GET') {
     const org=db.prepare('SELECT id,name,timezone,locale,settings FROM organizations WHERE id=?').get(user.organization_id);
@@ -208,13 +220,19 @@ async function api(req,res,url) {
     const d=await body(req),type=['time_off','availability','swap'].includes(d.type)?d.type:'time_off';
     const r=db.prepare(`INSERT INTO requests(organization_id,user_id,type,starts_at,ends_at,reason) VALUES(?,?,?,?,?,?)`)
       .run(user.organization_id,user.id,type,validDate(d.startsAt),validDate(d.endsAt),String(d.reason||'').slice(0,500));
-    audit(user,'create','request',r.lastInsertRowid); return json(res,201,{id:Number(r.lastInsertRowid)});
+    audit(user,'create','request',r.lastInsertRowid);
+    const managers=db.prepare(`SELECT id FROM users WHERE organization_id=? AND role IN ('owner','manager') AND status='active' AND id!=?`).all(user.organization_id,user.id).map(m=>m.id);
+    sendToUsers(managers,{title:'Новая заявка',body:`${user.name}: ${type==='time_off'?'отгул':type==='swap'?'обмен сменами':'доступность'}`,url:'/notifications'}).catch(()=>{});
+    return json(res,201,{id:Number(r.lastInsertRowid)});
   }
   if(/^\/api\/requests\/\d+\/review$/.test(pathname)&&req.method==='PATCH') {
     if(!manager(user))return fail(res,403,'Недостаточно прав'); const id=Number(pathname.split('/')[3]),d=await body(req);
     if(!['approved','rejected'].includes(d.status))return fail(res,422,'Некорректный статус');
+    const target=db.prepare('SELECT user_id FROM requests WHERE id=? AND organization_id=?').get(id,user.organization_id);
     const r=db.prepare(`UPDATE requests SET status=?,reviewed_by=? WHERE id=? AND organization_id=? AND status='pending'`).run(d.status,user.id,id,user.organization_id);
-    if(!r.changes)return fail(res,404,'Активная заявка не найдена'); audit(user,'review','request',id,{status:d.status}); return json(res,200,{ok:true});
+    if(!r.changes)return fail(res,404,'Активная заявка не найдена'); audit(user,'review','request',id,{status:d.status});
+    if(target) sendToUser(target.user_id,{title:'Заявка рассмотрена',body:d.status==='approved'?'Ваша заявка одобрена':'Ваша заявка отклонена',url:'/'}).catch(()=>{});
+    return json(res,200,{ok:true});
   }
   if(pathname==='/api/conversations'&&req.method==='GET') {
     ensureGeneralChat(user.organization_id,user.id);

@@ -177,6 +177,30 @@ test('organization settings can be read and updated', async () => {
   assert.equal(after.organization.settings.overtimeThreshold, 40);
 });
 
+test('web push: exposes a VAPID key and stores subscriptions', async () => {
+  const login = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'demo@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const auth = { Authorization: `Bearer ${login.token}` };
+
+  const vapid = await (await fetch(`${base}/api/push/vapid-public-key`, { headers: auth })).json();
+  assert.ok(typeof vapid.publicKey === 'string' && vapid.publicKey.length > 20);
+
+  const sub = await fetch(`${base}/api/push/subscribe`, {
+    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subscription: { endpoint: 'https://push.example/abc', keys: { p256dh: 'k', auth: 'a' } } })
+  });
+  assert.equal(sub.status, 201);
+
+  // a subscription without an endpoint is rejected
+  const bad = await fetch(`${base}/api/push/subscribe`, {
+    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subscription: {} })
+  });
+  assert.equal(bad.status, 422);
+});
+
 test('CORS preflight is answered for allowed origin', async () => {
   const res = await fetch(`${base}/api/me`, {
     method: 'OPTIONS',

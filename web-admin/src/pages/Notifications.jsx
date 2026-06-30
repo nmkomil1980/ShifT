@@ -1,8 +1,37 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api.js';
 import { relativeTime } from '../lib/util.js';
+import { pushSupported, currentPushState, enablePush, disablePush } from '../lib/push.js';
 import Layout from '../components/Layout.jsx';
 import * as I from '../components/Icons.jsx';
+
+function PushToggle() {
+  const [state, setState] = useState('disabled');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { currentPushState().then(setState); }, []);
+
+  if (!pushSupported() || state === 'unsupported') return null;
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      setState(state === 'enabled' ? await disablePush() : await enablePush());
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const denied = state === 'denied';
+  return (
+    <button className={`btn sm ${state === 'enabled' ? 'primary' : ''}`} disabled={busy || denied} onClick={toggle} title={denied ? 'Уведомления заблокированы в браузере' : ''}>
+      <I.Bell width={15} height={15} />
+      {denied ? 'Заблокировано' : state === 'enabled' ? 'Push включены' : busy ? '…' : 'Включить push'}
+    </button>
+  );
+}
 
 const FILTERS = [
   { key: 'all', label: 'Все' },
@@ -34,7 +63,10 @@ export default function Notifications() {
   return (
     <Layout>
       <div className="page">
-        <div className="page-head"><h2>Центр уведомлений</h2><p>Заявки команды и системные события.</p></div>
+        <div className="page-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+          <div><h2>Центр уведомлений</h2><p>Заявки команды и системные события.</p></div>
+          <PushToggle />
+        </div>
 
         <div className="tabs" style={{ gap: 12, border: 'none', marginBottom: 18 }}>
           {FILTERS.map((f) => (
