@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../theme.dart';
 import '../api/api_client.dart';
-import '../api/auth_controller.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
 import 'requests_screen.dart';

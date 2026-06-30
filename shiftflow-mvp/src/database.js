@@ -45,10 +45,50 @@ db.exec(`
     entity_type TEXT NOT NULL, entity_id INTEGER, details TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY, organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    type TEXT NOT NULL DEFAULT 'direct' CHECK(type IN ('group','direct')),
+    title TEXT NOT NULL DEFAULT '', is_general INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS conversation_members (
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_read_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+    PRIMARY KEY(conversation_id, user_id)
+  );
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE INDEX IF NOT EXISTS shifts_org_start_idx ON shifts(organization_id, starts_at);
   CREATE INDEX IF NOT EXISTS requests_org_status_idx ON requests(organization_id, status);
   CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS messages_conv_idx ON messages(conversation_id, id);
+  CREATE INDEX IF NOT EXISTS conv_members_user_idx ON conversation_members(user_id);
 `);
+
+/**
+ * Make sure the organization has a "General Team Chat" group and that `userId`
+ * is a member of it. Self-healing so it also covers orgs/users created before
+ * the chat feature existed. Returns the general conversation id.
+ */
+export function ensureGeneralChat(organizationId, userId) {
+  let conv = db.prepare(
+    'SELECT id FROM conversations WHERE organization_id=? AND is_general=1'
+  ).get(organizationId);
+  if (!conv) {
+    const id = db.prepare(
+      `INSERT INTO conversations(organization_id,type,title,is_general) VALUES(?,'group',?,1)`
+    ).run(organizationId, 'Общий чат команды').lastInsertRowid;
+    conv = { id: Number(id) };
+  }
+  db.prepare(
+    'INSERT OR IGNORE INTO conversation_members(conversation_id,user_id) VALUES(?,?)'
+  ).run(conv.id, userId);
+  return conv.id;
+}
 
 function seed() {
   if (db.prepare('SELECT COUNT(*) count FROM organizations').get().count) return;
@@ -76,6 +116,19 @@ function seed() {
     addShift.run(org,null,'Открытая смена',iso(2,12),iso(2,20),'Главный зал','open',owner);
     db.prepare(`INSERT INTO requests(organization_id,user_id,type,starts_at,ends_at,reason)
       VALUES(?,?,?,?,?,?)`).run(org,ids[3],'time_off',iso(7,0),iso(9,0),'Семейные обстоятельства');
+
+    // General team chat with every member joined and a few seed messages.
+    const generalId = db.prepare(
+      `INSERT INTO conversations(organization_id,type,title,is_general) VALUES(?,'group',?,1)`
+    ).run(org, 'Общий чат команды').lastInsertRowid;
+    const allUsers = [owner, ...ids];
+    const addMember = db.prepare('INSERT INTO conversation_members(conversation_id,user_id) VALUES(?,?)');
+    for (const uid of allUsers) addMember.run(generalId, uid);
+    const addMessage = db.prepare('INSERT INTO messages(conversation_id,user_id,body) VALUES(?,?,?)');
+    addMessage.run(generalId, owner, 'Всем привет! Новый график на неделю опубликован.');
+    addMessage.run(generalId, ids[0], 'Спасибо, посмотрю смены.');
+    addMessage.run(generalId, ids[2], 'Напоминаю про собрание в четверг в 10:00.');
+
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK'); throw error;

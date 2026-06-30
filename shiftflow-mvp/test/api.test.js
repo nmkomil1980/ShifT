@@ -74,6 +74,56 @@ test('protected endpoints reject missing credentials', async () => {
   assert.equal((await fetch(`${base}/api/me`)).status, 401);
 });
 
+test('team chat: list, read, send and direct conversations', async () => {
+  const login = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'demo@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const auth = { Authorization: `Bearer ${login.token}` };
+
+  const list = await (await fetch(`${base}/api/conversations`, { headers: auth })).json();
+  assert.ok(Array.isArray(list.conversations));
+  const general = list.conversations.find((c) => c.isGeneral);
+  assert.ok(general, 'general chat should exist');
+
+  const before = await (await fetch(`${base}/api/conversations/${general.id}/messages`, { headers: auth })).json();
+  assert.ok(before.messages.length >= 1);
+
+  const sent = await fetch(`${base}/api/conversations/${general.id}/messages`, {
+    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body: 'Привет из теста' })
+  });
+  assert.equal(sent.status, 201);
+
+  const after = await (await fetch(`${base}/api/conversations/${general.id}/messages`, { headers: auth })).json();
+  assert.equal(after.messages.length, before.messages.length + 1);
+
+  const direct = await fetch(`${base}/api/conversations/direct`, {
+    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: 2 })
+  });
+  assert.equal(direct.status, 201);
+  const directId = (await direct.json()).id;
+  // creating the same direct chat again returns the existing one (200)
+  const again = await fetch(`${base}/api/conversations/direct`, {
+    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: 2 })
+  });
+  assert.equal(again.status, 200);
+  assert.equal((await again.json()).id, directId);
+});
+
+test('chat membership is enforced', async () => {
+  const login = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'demo@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const auth = { Authorization: `Bearer ${login.token}` };
+  // a conversation id that does not exist / not a member of
+  const res = await fetch(`${base}/api/conversations/99999/messages`, { headers: auth });
+  assert.equal(res.status, 404);
+});
+
 test('CORS preflight is answered for allowed origin', async () => {
   const res = await fetch(`${base}/api/me`, {
     method: 'OPTIONS',

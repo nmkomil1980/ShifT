@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import '../theme.dart';
 import 'home_tab.dart';
 import 'calendar_tab.dart';
-import 'team_tab.dart';
+import 'messages_tab.dart';
 import 'profile_tab.dart';
 
 class HomeShell extends StatefulWidget {
@@ -21,7 +21,7 @@ class _HomeShellState extends State<HomeShell> {
     final tabs = [
       const HomeTab(),
       const CalendarTab(),
-      const TeamTab(),
+      const MessagesTab(),
       const ProfileTab(),
     ];
 

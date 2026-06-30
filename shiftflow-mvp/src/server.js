@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, audit } from './database.js';
+import { db, audit, ensureGeneralChat } from './database.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -130,6 +130,7 @@ async function api(req,res,url) {
     try {
       const result=db.prepare(`INSERT INTO users(organization_id,name,email,password_hash,role,job_title,phone) VALUES(?,?,?,?,?,?,?)`)
         .run(user.organization_id,required(d.name,'Имя',100),email,passwordHash(d.password||'Welcome123!'),['manager','employee'].includes(d.role)?d.role:'employee',String(d.jobTitle||'').slice(0,100),String(d.phone||'').slice(0,40));
+      ensureGeneralChat(user.organization_id,Number(result.lastInsertRowid));
       audit(user,'create','user',result.lastInsertRowid,{email}); return json(res,201,{id:Number(result.lastInsertRowid)});
     } catch(e) { if(String(e).includes('UNIQUE')) return fail(res,409,'Сотрудник с таким email уже существует'); throw e; }
   }
@@ -178,6 +179,62 @@ async function api(req,res,url) {
     if(!['approved','rejected'].includes(d.status))return fail(res,422,'Некорректный статус');
     const r=db.prepare(`UPDATE requests SET status=?,reviewed_by=? WHERE id=? AND organization_id=? AND status='pending'`).run(d.status,user.id,id,user.organization_id);
     if(!r.changes)return fail(res,404,'Активная заявка не найдена'); audit(user,'review','request',id,{status:d.status}); return json(res,200,{ok:true});
+  }
+  if(pathname==='/api/conversations'&&req.method==='GET') {
+    ensureGeneralChat(user.organization_id,user.id);
+    const rows=db.prepare(`SELECT c.id,c.type,c.title,c.is_general isGeneral,
+      (SELECT body FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) lastBody,
+      (SELECT created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) lastAt,
+      (SELECT u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.conversation_id=c.id ORDER BY m.id DESC LIMIT 1) lastAuthor,
+      (SELECT u.name FROM conversation_members cm2 JOIN users u ON u.id=cm2.user_id WHERE cm2.conversation_id=c.id AND cm2.user_id!=? LIMIT 1) otherName,
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id AND m.created_at>cm.last_read_at AND m.user_id!=?) unread
+      FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=?
+      WHERE c.organization_id=? ORDER BY lastAt DESC`).all(user.id,user.id,user.id,user.organization_id);
+    const conversations=rows.map(r=>({
+      id:r.id,type:r.type,isGeneral:!!r.isGeneral,
+      title:r.type==='direct'?(r.otherName||'Диалог'):(r.title||'Чат'),
+      lastBody:r.lastBody||'',lastAuthor:r.lastAuthor||'',lastAt:r.lastAt,unread:r.unread
+    }));
+    return json(res,200,{conversations});
+  }
+  if(/^\/api\/conversations\/\d+\/messages$/.test(pathname)&&req.method==='GET') {
+    const id=Number(pathname.split('/')[3]);
+    const member=db.prepare(`SELECT 1 FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id
+      WHERE cm.conversation_id=? AND cm.user_id=? AND c.organization_id=?`).get(id,user.id,user.organization_id);
+    if(!member) return fail(res,404,'Диалог не найден');
+    const messages=db.prepare(`SELECT m.id,m.body,m.created_at createdAt,m.user_id userId,u.name userName
+      FROM messages m JOIN users u ON u.id=m.user_id WHERE m.conversation_id=? ORDER BY m.id`).all(id);
+    db.prepare('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?')
+      .run(new Date().toISOString(),id,user.id);
+    return json(res,200,{messages});
+  }
+  if(/^\/api\/conversations\/\d+\/messages$/.test(pathname)&&req.method==='POST') {
+    const id=Number(pathname.split('/')[3]);
+    const member=db.prepare(`SELECT 1 FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id
+      WHERE cm.conversation_id=? AND cm.user_id=? AND c.organization_id=?`).get(id,user.id,user.organization_id);
+    if(!member) return fail(res,404,'Диалог не найден');
+    const d=await body(req); const text=required(d.body,'Сообщение',2000);
+    const r=db.prepare('INSERT INTO messages(conversation_id,user_id,body) VALUES(?,?,?)').run(id,user.id,text);
+    db.prepare('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?')
+      .run(new Date().toISOString(),id,user.id);
+    return json(res,201,{id:Number(r.lastInsertRowid)});
+  }
+  if(pathname==='/api/conversations/direct'&&req.method==='POST') {
+    const d=await body(req); const otherId=Number(d.userId);
+    const other=db.prepare(`SELECT id FROM users WHERE id=? AND organization_id=? AND status='active'`).get(otherId,user.organization_id);
+    if(!other||otherId===user.id) return fail(res,422,'Сотрудник не найден');
+    const existing=db.prepare(`SELECT c.id FROM conversations c
+      JOIN conversation_members a ON a.conversation_id=c.id AND a.user_id=?
+      JOIN conversation_members b ON b.conversation_id=c.id AND b.user_id=?
+      WHERE c.type='direct' AND c.organization_id=? LIMIT 1`).get(user.id,otherId,user.organization_id);
+    if(existing) return json(res,200,{id:existing.id});
+    db.exec('BEGIN');
+    try {
+      const cid=db.prepare(`INSERT INTO conversations(organization_id,type) VALUES(?,'direct')`).run(user.organization_id).lastInsertRowid;
+      const addM=db.prepare('INSERT INTO conversation_members(conversation_id,user_id) VALUES(?,?)');
+      addM.run(cid,user.id); addM.run(cid,otherId);
+      db.exec('COMMIT'); return json(res,201,{id:Number(cid)});
+    } catch(e){ db.exec('ROLLBACK'); throw e; }
   }
   if(pathname==='/api/analytics'&&req.method==='GET') {
     const rows=db.prepare(`SELECT date(starts_at) day,COUNT(*) shifts,ROUND(SUM((julianday(ends_at)-julianday(starts_at))*24),1) hours,

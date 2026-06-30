@@ -87,6 +87,70 @@ class StaffMember {
       );
 }
 
+class Conversation {
+  final int id;
+  final String type;
+  final bool isGeneral;
+  final String title;
+  final String lastBody;
+  final String lastAuthor;
+  final DateTime? lastAt;
+  final int unread;
+
+  Conversation({
+    required this.id,
+    required this.type,
+    required this.isGeneral,
+    required this.title,
+    required this.lastBody,
+    required this.lastAuthor,
+    required this.lastAt,
+    required this.unread,
+  });
+
+  factory Conversation.fromJson(Map<String, dynamic> j) => Conversation(
+        id: j['id'] as int,
+        type: j['type'] ?? 'group',
+        isGeneral: j['isGeneral'] == true,
+        title: j['title'] ?? '',
+        lastBody: j['lastBody'] ?? '',
+        lastAuthor: j['lastAuthor'] ?? '',
+        lastAt: j['lastAt'] == null
+            ? null
+            : DateTime.parse((j['lastAt'] as String).replaceFirst(' ', 'T') +
+                    'Z')
+                .toLocal(),
+        unread: j['unread'] ?? 0,
+      );
+}
+
+class Message {
+  final int id;
+  final int userId;
+  final String userName;
+  final String body;
+  final DateTime createdAt;
+
+  Message({
+    required this.id,
+    required this.userId,
+    required this.userName,
+    required this.body,
+    required this.createdAt,
+  });
+
+  factory Message.fromJson(Map<String, dynamic> j) => Message(
+        id: j['id'] as int,
+        userId: j['userId'] as int,
+        userName: j['userName'] ?? '',
+        body: j['body'] ?? '',
+        createdAt:
+            DateTime.parse((j['createdAt'] as String).replaceFirst(' ', 'T') +
+                    'Z')
+                .toLocal(),
+      );
+}
+
 class LeaveRequest {
   final int id;
   final String type;
