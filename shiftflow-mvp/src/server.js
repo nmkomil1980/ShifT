@@ -174,6 +174,25 @@ async function api(req,res,url) {
       .run(user.organization_id,d.userId||null,required(d.title,'Название',120),start,end,String(d.location||'').slice(0,120),String(d.notes||'').slice(0,1000),d.userId?'scheduled':'open',user.id);
     audit(user,'create','shift',r.lastInsertRowid); return json(res,201,{id:Number(r.lastInsertRowid)});
   }
+  if(pathname.startsWith('/api/shifts/')&&req.method==='PATCH') {
+    if(!manager(user))return fail(res,403,'Недостаточно прав'); const id=idFrom(pathname,'/api/shifts/'); const d=await body(req);
+    const shift=db.prepare('SELECT * FROM shifts WHERE id=? AND organization_id=?').get(id,user.organization_id);
+    if(!shift)return fail(res,404,'Смена не найдена');
+    const start=d.startsAt!==undefined?validDate(d.startsAt):shift.starts_at;
+    const end=d.endsAt!==undefined?validDate(d.endsAt):shift.ends_at;
+    if(new Date(end)<=new Date(start))return fail(res,422,'Окончание должно быть позже начала');
+    let userId=shift.user_id;
+    if(d.userId!==undefined){
+      if(d.userId===null) userId=null;
+      else { const a=db.prepare('SELECT id FROM users WHERE id=? AND organization_id=?').get(Number(d.userId),user.organization_id);
+        if(!a)return fail(res,422,'Сотрудник не найден'); userId=Number(d.userId); }
+    }
+    const status=d.status&&['scheduled','open','active','completed','cancelled'].includes(d.status)?d.status:(userId?(shift.status==='open'?'scheduled':shift.status):'open');
+    db.prepare('UPDATE shifts SET user_id=?,title=?,starts_at=?,ends_at=?,location=?,status=? WHERE id=?').run(
+      userId,d.title!==undefined?required(d.title,'Название',120):shift.title,start,end,
+      d.location!==undefined?String(d.location).slice(0,120):shift.location,status,id);
+    audit(user,'update','shift',id); return json(res,200,{ok:true});
+  }
   if(pathname.startsWith('/api/shifts/')&&req.method==='DELETE') {
     if(!manager(user))return fail(res,403,'Недостаточно прав'); const id=idFrom(pathname,'/api/shifts/');
     const r=db.prepare('DELETE FROM shifts WHERE id=? AND organization_id=?').run(id,user.organization_id); if(!r.changes)return fail(res,404,'Смена не найдена');

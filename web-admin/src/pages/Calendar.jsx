@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
-import { timeRange, dayKey, RU_DAYS, RU_MONTHS, statusMeta } from '../lib/util.js';
+import { timeRange, dayKey, RU_DAYS, RU_MONTHS, statusMeta, initials } from '../lib/util.js';
 import Layout from '../components/Layout.jsx';
 import Modal from '../components/Modal.jsx';
 import * as I from '../components/Icons.jsx';
@@ -22,8 +22,11 @@ export default function Calendar() {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [shifts, setShifts] = useState(null);
   const [staff, setStaff] = useState([]);
+  const [defaultHours, setDefaultHours] = useState(8);
   const [showAdd, setShowAdd] = useState(params.get('new') === '1');
   const [addDay, setAddDay] = useState(null);
+  const [dropError, setDropError] = useState('');
+  const [dragOverKey, setDragOverKey] = useState(null);
 
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart); d.setDate(d.getDate() + i); return d;
@@ -38,6 +41,40 @@ export default function Calendar() {
   }, [weekStart.getTime()]);
   useEffect(load, [load]);
   useEffect(() => { api.get('/staff').then((d) => setStaff(d.staff)).catch(() => {}); }, []);
+  useEffect(() => {
+    api.get('/organization')
+      .then((d) => setDefaultHours(d.organization.settings.defaultShiftHours || 8))
+      .catch(() => {});
+  }, []);
+
+  // Drag-and-drop: drop a roster member onto a day to create a shift, or drag an
+  // existing shift chip to another day to reschedule it (keeping time of day).
+  function onDropDay(day, e) {
+    e.preventDefault();
+    setDragOverKey(null);
+    setDropError('');
+    let payload;
+    try { payload = JSON.parse(e.dataTransfer.getData('application/json')); } catch { return; }
+
+    if (payload.kind === 'staff') {
+      const start = new Date(day); start.setHours(9, 0, 0, 0);
+      const end = new Date(start.getTime() + defaultHours * 3600000);
+      api.post('/shifts', {
+        title: 'Смена', userId: payload.id, location: '',
+        startsAt: start.toISOString(), endsAt: end.toISOString()
+      }).then(load).catch((err) => setDropError(err.message));
+    } else if (payload.kind === 'shift') {
+      const oldStart = new Date(payload.startsAt);
+      const duration = new Date(payload.endsAt) - oldStart;
+      const start = new Date(day);
+      start.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
+      const end = new Date(start.getTime() + duration);
+      if (dayKey(start) === dayKey(oldStart)) return;
+      api.patch(`/shifts/${payload.id}`, {
+        startsAt: start.toISOString(), endsAt: end.toISOString()
+      }).then(load).catch((err) => setDropError(err.message));
+    }
+  }
 
   function closeAdd() {
     setShowAdd(false); setAddDay(null);
@@ -68,13 +105,18 @@ export default function Calendar() {
           {isManager && <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={() => openAdd(new Date())}><I.Plus width={18} height={18} /> Новая смена</button>}
         </div>
 
+        {dropError && <div className="auth-error" style={{ marginBottom: 12 }}>{dropError}</div>}
         {!shifts ? <div className="card card-pad"><div className="spinner" /></div> : (
+          <div className="cal-layout">
           <div className="cal-grid">
             {days.map((d) => {
               const key = dayKey(d);
               const list = byDay[key] || [];
               return (
-                <div className="cal-col" key={key}>
+                <div className={`cal-col ${dragOverKey === key ? 'drag-over' : ''}`} key={key}
+                  onDragOver={isManager ? (e) => { e.preventDefault(); setDragOverKey(key); } : undefined}
+                  onDragLeave={isManager ? () => setDragOverKey((k) => (k === key ? null : k)) : undefined}
+                  onDrop={isManager ? (e) => onDropDay(d, e) : undefined}>
                   <div className={`cal-colhead ${key === todayKey ? 'today' : ''}`}>
                     <small>{RU_DAYS[d.getDay()]}</small><b>{d.getDate()}</b>
                   </div>
@@ -82,7 +124,10 @@ export default function Calendar() {
                     {list.map((s) => {
                       const st = statusMeta(s.status);
                       return (
-                        <div key={s.id} className={`shift-chip ${st.cls}`} title={s.title}>
+                        <div key={s.id} className={`shift-chip ${st.cls}`} title={s.title}
+                          draggable={isManager}
+                          onDragStart={(e) => e.dataTransfer.setData('application/json',
+                            JSON.stringify({ kind: 'shift', id: s.id, startsAt: s.starts_at, endsAt: s.ends_at }))}>
                           <b>{timeRange(s.starts_at, s.ends_at)}</b>
                           <div className="who">{s.user_name || 'Открытая'}</div>
                           <div className="role">{s.job_title || s.title}</div>
@@ -98,6 +143,26 @@ export default function Calendar() {
                 </div>
               );
             })}
+          </div>
+
+          {isManager && (
+            <aside className="roster card card-pad">
+              <h3 style={{ margin: '0 0 4px' }}>Свободные</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: '0 0 14px' }}>Перетащите на день для назначения</p>
+              {staff.filter((s) => s.status === 'active').map((s) => (
+                <div key={s.id} className="roster-item" draggable
+                  onDragStart={(e) => e.dataTransfer.setData('application/json',
+                    JSON.stringify({ kind: 'staff', id: s.id }))}>
+                  <div className="avatar">{initials(s.name)}</div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{s.name}</div>
+                    <div style={{ color: 'var(--text-faint)', fontSize: 12 }}>{s.jobTitle || s.role}</div>
+                  </div>
+                  <I.Plus width={16} height={16} style={{ marginLeft: 'auto', color: 'var(--text-faint)' }} />
+                </div>
+              ))}
+            </aside>
+          )}
           </div>
         )}
       </div>

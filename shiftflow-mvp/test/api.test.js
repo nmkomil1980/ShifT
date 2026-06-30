@@ -124,6 +124,35 @@ test('chat membership is enforced', async () => {
   assert.equal(res.status, 404);
 });
 
+test('a shift can be rescheduled and reassigned via PATCH', async () => {
+  const login = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'demo@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const auth = { Authorization: `Bearer ${login.token}` };
+
+  const start = new Date(Date.now() + 86400000); start.setHours(9, 0, 0, 0);
+  const end = new Date(start.getTime() + 8 * 3600000);
+  const created = await (await fetch(`${base}/api/shifts`, {
+    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'DnD', startsAt: start.toISOString(), endsAt: end.toISOString() })
+  })).json();
+
+  // reassign to user 2 and move one day later
+  const moved = new Date(start.getTime() + 86400000);
+  const movedEnd = new Date(end.getTime() + 86400000);
+  const patch = await fetch(`${base}/api/shifts/${created.id}`, {
+    method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: 2, startsAt: moved.toISOString(), endsAt: movedEnd.toISOString() })
+  });
+  assert.equal(patch.status, 200);
+
+  const list = await (await fetch(`${base}/api/shifts?from=${new Date(Date.now() - 86400000).toISOString()}&to=${new Date(Date.now() + 5 * 86400000).toISOString()}`, { headers: auth })).json();
+  const updated = list.shifts.find((s) => s.id === created.id);
+  assert.equal(updated.user_id, 2);
+  assert.equal(updated.status, 'scheduled');
+});
+
 test('organization settings can be read and updated', async () => {
   const login = await (await fetch(`${base}/api/auth/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

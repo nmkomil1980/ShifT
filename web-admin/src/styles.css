@@ -188,6 +188,17 @@ table.data tr:last-child td { border-bottom: none; }
 .shift-chip { border-left: 4px solid var(--indigo-500); background: var(--bg); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
 .shift-chip.green { border-left-color: var(--green-fg); }
 .shift-chip.red { border-left-color: var(--red-fg); }
+.cal-layout { display: grid; grid-template-columns: 1fr 280px; gap: 18px; align-items: start; }
+.cal-layout .cal-grid { min-width: 0; }
+.cal-col.drag-over { background: var(--indigo-50); box-shadow: inset 0 0 0 2px var(--indigo-500); }
+.shift-chip[draggable="true"] { cursor: grab; }
+.shift-chip[draggable="true"]:active { cursor: grabbing; }
+.roster { position: sticky; top: 90px; }
+.roster-item { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; cursor: grab; background: var(--surface); }
+.roster-item:active { cursor: grabbing; }
+.roster-item:hover { border-color: var(--indigo-500); }
+.roster-item .avatar { width: 36px; height: 36px; font-size: 13px; }
+@media (max-width: 1080px) { .cal-layout { grid-template-columns: 1fr; } .roster { position: static; } }
 .shift-chip b { display: block; font-size: 12px; }
 .shift-chip .who { color: var(--text); margin: 2px 0; }
 .shift-chip .role { color: var(--text-faint); text-transform: uppercase; font-size: 10px; font-weight: 600; }
