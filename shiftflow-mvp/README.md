@@ -48,9 +48,32 @@ PBKDF2-хеширование паролей и непрозрачные cookie-
 
 ## API
 
-Основные ресурсы: `/api/auth/*`, `/api/staff`, `/api/shifts`,
-`/api/requests`, `/api/dashboard`, `/api/analytics`. Проверка состояния:
-`GET /api/health`.
+Основные ресурсы: `/api/auth/*`, `/api/me`, `/api/staff`, `/api/shifts`,
+`/api/requests`, `/api/notifications`, `/api/dashboard`, `/api/analytics`.
+Проверка состояния: `GET /api/health`.
+
+### Авторизация для веб и мобайла
+
+API одновременно поддерживает два способа аутентификации, чтобы его могли
+потреблять и веб-клиент (React), и мобильное приложение (Flutter):
+
+- **Cookie-сессия** — `POST /api/auth/login` ставит `HttpOnly` cookie
+  `sf_session` (используется веб-SPA).
+- **Bearer-токен** — тот же `login`/`register` возвращает `token` в теле
+  ответа. Мобильный клиент хранит его и шлёт в заголовке
+  `Authorization: Bearer <token>`.
+
+`GET/PATCH /api/me` — текущий профиль и его обновление (имя, должность,
+телефон). `GET /api/notifications` — лента уведомлений по заявкам.
+
+### CORS
+
+Для кросс-доменных запросов из dev-серверов фронтендов задайте разрешённые
+источники через переменную окружения (через запятую):
+
+```bash
+CORS_ORIGINS="http://localhost:5173,http://localhost:8080" node src/server.js
+```
 
 ## Перед публичным запуском
 

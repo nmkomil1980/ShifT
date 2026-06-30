@@ -25,8 +25,13 @@ async function body(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('INVALID_JSON'); }
 }
 
+function bearerToken(req) {
+  const header = req.headers.authorization || '';
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+}
+
 function currentUser(req) {
-  const token = parseCookies(req.headers.cookie).sf_session;
+  const token = bearerToken(req) || parseCookies(req.headers.cookie).sf_session;
   if (!token) return null;
   return db.prepare(`SELECT u.*,o.name organization_name FROM sessions s JOIN users u ON u.id=s.user_id
     JOIN organizations o ON o.id=u.organization_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.status='active'`).get(tokenHash(token));
@@ -61,7 +66,7 @@ async function api(req,res,url) {
       const uid=db.prepare(`INSERT INTO users(organization_id,name,email,password_hash,role,job_title) VALUES(?,?,?,?,?,'Управляющий')`)
         .run(org,name,email,passwordHash(data.password),'owner').lastInsertRowid;
       db.exec('COMMIT'); const token=createSession(uid);
-      return json(res,201,{user:cleanUser(currentUser({headers:{cookie:`sf_session=${token}`}}))},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
+      return json(res,201,{token,user:cleanUser(currentUser({headers:{cookie:`sf_session=${token}`}}))},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
     } catch(e) { db.exec('ROLLBACK'); if(String(e).includes('UNIQUE')) return fail(res,409,'Этот email уже используется'); throw e; }
   }
   if(req.method==='POST'&&pathname==='/api/auth/login') {
@@ -69,16 +74,39 @@ async function api(req,res,url) {
     const user=db.prepare(`SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.email=? AND u.status='active'`).get(String(data.email||'').toLowerCase());
     if(!user||!passwordMatches(String(data.password||''),user.password_hash)) return fail(res,401,'Неверный email или пароль');
     const token=createSession(user.id); audit(user,'login','session',null);
-    return json(res,200,{user:cleanUser(user)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
+    return json(res,200,{token,user:cleanUser(user)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
   }
   if(req.method==='POST'&&pathname==='/api/auth/logout') {
-    const token=parseCookies(req.headers.cookie).sf_session;
+    const token=bearerToken(req)||parseCookies(req.headers.cookie).sf_session;
     if(token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(tokenHash(token));
     return json(res,200,{ok:true},{'Set-Cookie':clearSessionCookie()});
   }
   const user=currentUser(req);
   if(!user) return fail(res,401,'Требуется авторизация');
   if(pathname==='/api/me'&&req.method==='GET') return json(res,200,{user:cleanUser(user)});
+  if(pathname==='/api/me'&&req.method==='PATCH') {
+    const d=await body(req);
+    db.prepare('UPDATE users SET name=?,job_title=?,phone=? WHERE id=?').run(
+      String(d.name??user.name).slice(0,100),String(d.jobTitle??user.job_title).slice(0,100),String(d.phone??user.phone).slice(0,40),user.id);
+    audit(user,'update','profile',user.id);
+    return json(res,200,{user:cleanUser({...user,name:d.name??user.name,job_title:d.jobTitle??user.job_title,phone:d.phone??user.phone})});
+  }
+  if(pathname==='/api/notifications'&&req.method==='GET') {
+    const org=user.organization_id;
+    const requests=db.prepare(`SELECT r.id,r.type,r.status,r.starts_at,r.ends_at,r.reason,r.created_at,u.name user_name
+      FROM requests r JOIN users u ON u.id=r.user_id
+      WHERE r.organization_id=?${manager(user)?'':' AND r.user_id=?'} ORDER BY r.created_at DESC LIMIT 20`);
+    const rows=manager(user)?requests.all(org):requests.all(org,user.id);
+    const typeLabel={time_off:'Запрос на отгул',availability:'Доступность',swap:'Обмен сменами'};
+    const statusLabel={pending:'Ожидает',approved:'Одобрено',rejected:'Отклонено'};
+    const notifications=rows.map(r=>({
+      id:r.id,category:r.type==='swap'?'swap':r.type==='time_off'?'leave':'availability',
+      title:`${typeLabel[r.type]||'Заявка'}: ${statusLabel[r.status]}`,
+      body:`${r.user_name} · ${r.starts_at.slice(0,10)} – ${r.ends_at.slice(0,10)}${r.reason?` · ${r.reason}`:''}`,
+      status:r.status,createdAt:r.created_at,actionable:manager(user)&&r.status==='pending'
+    }));
+    return json(res,200,{notifications,unread:notifications.filter(n=>n.actionable).length});
+  }
 
   if(pathname==='/api/dashboard'&&req.method==='GET') {
     const org=user.organization_id, today=new Date().toISOString().slice(0,10);
@@ -170,8 +198,24 @@ function staticFile(res,pathname) {
   fs.createReadStream(file).pipe(res);
 }
 
+const allowedOrigins=(process.env.CORS_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
+function applyCors(req,res){
+  const origin=req.headers.origin;
+  if(!origin) return;
+  if(allowedOrigins.includes('*')||allowedOrigins.includes(origin)){
+    res.setHeader('Access-Control-Allow-Origin',origin);
+    res.setHeader('Vary','Origin');
+    res.setHeader('Access-Control-Allow-Credentials','true');
+    res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
+    res.setHeader('Access-Control-Max-Age','86400');
+  }
+}
+
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
+  applyCors(req,res);
+  if(req.method==='OPTIONS'){ res.writeHead(204); return res.end(); }
   try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else staticFile(res,url.pathname); }
   catch(error) { console.error(error); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
 });
