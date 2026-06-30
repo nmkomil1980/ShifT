@@ -1,0 +1,15 @@
+{
+  "name": "shiftflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ShiftFlow workforce scheduling SaaS MVP",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -1,0 +1,19 @@
+services:
+  shiftflow:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      DATABASE_PATH: /app/data/shiftflow.db
+    volumes:
+      - shiftflow_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+volumes:
+  shiftflow_data:
