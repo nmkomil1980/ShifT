@@ -56,7 +56,7 @@ export default function Login() {
         </button>
 
         <p className="auth-switch">
-          Нет аккаунта? <a className="link" href="#" onClick={(e) => e.preventDefault()}>Свяжитесь с администратором</a>
+          Нет аккаунта? <a className="link" href="/register" onClick={(e) => { e.preventDefault(); navigate('/register'); }}>Зарегистрировать компанию</a>
         </p>
       </form>
     </div>

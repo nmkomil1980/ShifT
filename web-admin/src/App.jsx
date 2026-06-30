@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './lib/auth.jsx';
 import Login from './pages/Login.jsx';
+import Onboarding from './pages/Onboarding.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Staff from './pages/Staff.jsx';
 import Calendar from './pages/Calendar.jsx';
@@ -21,6 +22,9 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+      {/* Onboarding stays mounted across all steps: step 1 creates the account
+          (which authenticates the user), steps 2-4 run authenticated. */}
+      <Route path="/register" element={<Onboarding />} />
       <Route path="/" element={<Protected><Dashboard /></Protected>} />
       <Route path="/staff" element={<Protected><Staff /></Protected>} />
       <Route path="/calendar" element={<Protected><Calendar /></Protected>} />

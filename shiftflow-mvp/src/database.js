@@ -69,6 +69,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS conv_members_user_idx ON conversation_members(user_id);
 `);
 
+// Lightweight additive migrations for columns added after the first release.
+function ensureColumn(table, column, definition) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn('organizations', 'settings', `TEXT NOT NULL DEFAULT '{}'`);
+
 /**
  * Make sure the organization has a "General Team Chat" group and that `userId`
  * is a member of it. Self-healing so it also covers orgs/users created before

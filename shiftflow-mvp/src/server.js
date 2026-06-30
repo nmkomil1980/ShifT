@@ -91,6 +91,23 @@ async function api(req,res,url) {
     audit(user,'update','profile',user.id);
     return json(res,200,{user:cleanUser({...user,name:d.name??user.name,job_title:d.jobTitle??user.job_title,phone:d.phone??user.phone})});
   }
+  if(pathname==='/api/organization'&&req.method==='GET') {
+    const org=db.prepare('SELECT id,name,timezone,locale,settings FROM organizations WHERE id=?').get(user.organization_id);
+    let settings={}; try{settings=JSON.parse(org.settings||'{}');}catch{settings={};}
+    const defaults={industry:'',language:org.locale||'ru',operatingDays:[1,2,3,4,5],defaultShiftHours:8,overtimeThreshold:40,autoApproveSwaps:false,managerOverrides:false,roles:[]};
+    return json(res,200,{organization:{id:org.id,name:org.name,timezone:org.timezone,settings:{...defaults,...settings}}});
+  }
+  if(pathname==='/api/organization'&&req.method==='PATCH') {
+    if(!manager(user)) return fail(res,403,'Недостаточно прав');
+    const d=await body(req);
+    const org=db.prepare('SELECT name,settings FROM organizations WHERE id=?').get(user.organization_id);
+    let current={}; try{current=JSON.parse(org.settings||'{}');}catch{current={};}
+    const merged=d.settings&&typeof d.settings==='object'?{...current,...d.settings}:current;
+    const name=typeof d.name==='string'&&d.name.trim()?d.name.trim().slice(0,120):org.name;
+    db.prepare('UPDATE organizations SET name=?,settings=? WHERE id=?').run(name,JSON.stringify(merged),user.organization_id);
+    audit(user,'update','organization',user.organization_id);
+    return json(res,200,{ok:true});
+  }
   if(pathname==='/api/notifications'&&req.method==='GET') {
     const org=user.organization_id;
     const requests=db.prepare(`SELECT r.id,r.type,r.status,r.starts_at,r.ends_at,r.reason,r.created_at,u.name user_name

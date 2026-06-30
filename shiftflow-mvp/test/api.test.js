@@ -124,6 +124,30 @@ test('chat membership is enforced', async () => {
   assert.equal(res.status, 404);
 });
 
+test('organization settings can be read and updated', async () => {
+  const login = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'demo@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const auth = { Authorization: `Bearer ${login.token}` };
+
+  const before = await (await fetch(`${base}/api/organization`, { headers: auth })).json();
+  assert.equal(before.organization.settings.defaultShiftHours, 8);
+
+  const patch = await fetch(`${base}/api/organization`, {
+    method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Acme Ops', settings: { industry: 'warehouse', autoApproveSwaps: true } })
+  });
+  assert.equal(patch.status, 200);
+
+  const after = await (await fetch(`${base}/api/organization`, { headers: auth })).json();
+  assert.equal(after.organization.name, 'Acme Ops');
+  assert.equal(after.organization.settings.industry, 'warehouse');
+  assert.equal(after.organization.settings.autoApproveSwaps, true);
+  // unspecified keys are preserved
+  assert.equal(after.organization.settings.overtimeThreshold, 40);
+});
+
 test('CORS preflight is answered for allowed origin', async () => {
   const res = await fetch(`${base}/api/me`, {
     method: 'OPTIONS',
