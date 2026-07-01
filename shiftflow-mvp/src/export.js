@@ -8,7 +8,11 @@ const FONT_BOLD = path.join(assetsDir, 'DejaVuSans-Bold.ttf');
 
 // ---- CSV -----------------------------------------------------------------
 function csvCell(value) {
-  const s = value == null ? '' : String(value);
+  let s = value == null ? '' : String(value);
+  // CSV/formula-injection guard: a leading =, +, -, @, tab or CR makes Excel/
+  // Sheets treat the cell as a formula. Prefix such values with a single quote
+  // so they are shown literally instead of executed.
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

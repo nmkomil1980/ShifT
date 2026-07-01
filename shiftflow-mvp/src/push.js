@@ -31,14 +31,35 @@ webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
 
 export const vapidPublicKey = keys.publicKey;
 
+// Push endpoints are attacker-controlled, and the server later makes an HTTP
+// request to them (web-push). Restrict to https on a public host so a client
+// cannot turn notifications into a blind SSRF against internal services.
+export function isSafePushEndpoint(endpoint) {
+  let url;
+  try { url = new URL(endpoint); } catch { return false; }
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.endsWith('.local')) return false;
+  // Block IP-literal hosts pointing at private / link-local / loopback ranges.
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    const [a, b] = host.split('.').map(Number);
+    if (a === 127 || a === 10 || a === 0 || a === 169 && b === 254 ||
+        a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31) return false;
+  }
+  if (host === '::1' || host.startsWith('fd') || host.startsWith('fe80') || host === '[::1]') return false;
+  return true;
+}
+
 export async function saveSubscription(userId, subscription) {
-  if (!subscription || !subscription.endpoint || !subscription.keys) return;
+  if (!subscription || !subscription.endpoint || !subscription.keys) return false;
+  if (!isSafePushEndpoint(subscription.endpoint)) return false;
   await q.run(
     `INSERT INTO push_subscriptions(user_id, endpoint, p256dh, auth) VALUES(?,?,?,?)
      ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,
        p256dh=excluded.p256dh, auth=excluded.auth`,
     [userId, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth]
   );
+  return true;
 }
 
 export async function removeSubscription(endpoint) {

@@ -435,6 +435,51 @@ test('RBAC: owner-only billing and role assignment', async () => {
   assert.equal(list3.staff.find((s) => s.id === mgrMade.id).role, 'manager');
 });
 
+test('security: CSV export neutralizes formula injection', async () => {
+  const owner = (await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }))).token;
+  await post('/api/staff', { name: '=1+2', email: 'csvi@shiftflow.local' }, owner);
+  const csv = await (await fetch(`${base}/api/export/staff.csv`, { headers: { Authorization: `Bearer ${owner}` } })).text();
+  assert.ok(csv.includes(`'=1+2`), 'leading = should be prefixed with a quote');
+  assert.ok(!/(^|,)=1\+2/.test(csv), 'raw =1+2 formula must not appear unescaped');
+});
+
+test('security: unsafe push endpoints are rejected (SSRF guard)', async () => {
+  const owner = (await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }))).token;
+  const bad = await post('/api/push/subscribe', { subscription: { endpoint: 'http://169.254.169.254/latest/meta-data', keys: { p256dh: 'k', auth: 'a' } } }, owner);
+  assert.equal(bad.status, 422);
+  const alsoBad = await post('/api/push/subscribe', { subscription: { endpoint: 'https://localhost/x', keys: { p256dh: 'k', auth: 'a' } } }, owner);
+  assert.equal(alsoBad.status, 422);
+  const ok = await post('/api/push/subscribe', { subscription: { endpoint: 'https://fcm.googleapis.com/abc', keys: { p256dh: 'k', auth: 'a' } } }, owner);
+  assert.equal(ok.status, 201);
+});
+
+test('security: employees do not see colleagues contact details or exports', async () => {
+  const emp = (await json(await post('/api/auth/login', { email: 'ivan@shiftflow.local', password: 'Demo123!' }))).token;
+  const staff = (await json(await fetch(`${base}/api/staff`, { headers: { Authorization: `Bearer ${emp}` } }))).staff;
+  const others = staff.filter((s) => s.email !== undefined);
+  assert.ok(others.every((s) => s.email === '' && s.phone === ''), 'email/phone must be hidden from employees');
+  // bulk export is manager-only
+  assert.equal((await fetch(`${base}/api/export/staff.csv`, { headers: { Authorization: `Bearer ${emp}` } })).status, 403);
+});
+
+test('security: org settings PATCH cannot grant a subscription', async () => {
+  const owner = (await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }))).token;
+  const mgr = (await json(await post('/api/auth/login', { email: 'elena@shiftflow.local', password: 'Demo123!' }))).token;
+  const getBilling = async () => (await json(await fetch(`${base}/api/billing`, { headers: { Authorization: `Bearer ${owner}` } }))).billing;
+
+  const before = await getBilling();
+  // manager tries to inject a plan through the settings blob (bypassing owner-only billing)
+  await fetch(`${base}/api/organization`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mgr}` },
+    body: JSON.stringify({ settings: { billing: { plan: 'yearly', status: 'active', currentPeriodEnd: '2099-01-01T00:00:00.000Z' } } })
+  });
+  const after = await getBilling();
+  // billing is unchanged by the settings merge, and the injected value is ignored
+  assert.equal(after.plan, before.plan);
+  assert.equal(after.currentPeriodEnd, before.currentPeriodEnd);
+  assert.notEqual(after.currentPeriodEnd, '2099-01-01T00:00:00.000Z');
+});
+
 test('CORS preflight is answered for allowed origin', async () => {
   const res = await fetch(`${base}/api/me`, {
     method: 'OPTIONS',

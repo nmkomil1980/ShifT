@@ -27,6 +27,11 @@ export async function sendMail({ to, subject, text, html }) {
   return info;
 }
 
+// Escape user-controlled values before interpolating into HTML email bodies.
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 const shell = (title, bodyHtml) => `
   <div style="font-family:Inter,Arial,sans-serif;max-width:480px;margin:0 auto;color:#1e2130">
     <h2 style="color:#4f46e5">ShiftFlow</h2>
@@ -44,7 +49,7 @@ export const templates = {
     subject: `Приглашение в ShiftFlow — ${orgName}`,
     text: `Вас пригласили в команду «${orgName}» в ShiftFlow.\nЗадайте пароль и войдите: ${link}`,
     html: shell('Вас пригласили в команду',
-      `<p>Вас добавили в команду <b>${orgName}</b>. Задайте пароль, чтобы активировать аккаунт.</p>${button(link, 'Принять приглашение')}`),
+      `<p>Вас добавили в команду <b>${esc(orgName)}</b>. Задайте пароль, чтобы активировать аккаунт.</p>${button(link, 'Принять приглашение')}`),
   }),
   reset: ({ link }) => ({
     subject: 'Сброс пароля ShiftFlow',

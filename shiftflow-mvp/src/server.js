@@ -211,7 +211,9 @@ async function api(req,res,url) {
   if(pathname==='/api/push/subscribe'&&req.method==='POST') {
     const d=await body(req);
     if(!d.subscription||!d.subscription.endpoint) return fail(res,422,'Некорректная подписка');
-    await saveSubscription(user.id,d.subscription); return json(res,201,{ok:true});
+    const saved=await saveSubscription(user.id,d.subscription);
+    if(!saved) return fail(res,422,'Недопустимый адрес push-подписки');
+    return json(res,201,{ok:true});
   }
   if(pathname==='/api/push/unsubscribe'&&req.method==='POST') {
     const d=await body(req); if(d.endpoint) await removeSubscription(d.endpoint); return json(res,200,{ok:true});
@@ -227,7 +229,9 @@ async function api(req,res,url) {
     const d=await body(req);
     const org=await q.get('SELECT name,settings FROM organizations WHERE id=?', [user.organization_id]);
     let current={}; try{current=JSON.parse(org.settings||'{}');}catch{current={};}
-    const merged=d.settings&&typeof d.settings==='object'?{...current,...d.settings}:current;
+    // Merge client settings but never let `billing` be set this way — it is
+    // owner-only and managed solely by the /api/billing/* endpoints.
+    const merged=d.settings&&typeof d.settings==='object'?{...current,...d.settings,billing:current.billing}:current;
     const name=typeof d.name==='string'&&d.name.trim()?d.name.trim().slice(0,120):org.name;
     await q.run('UPDATE organizations SET name=?,settings=? WHERE id=?', [name,JSON.stringify(merged),user.organization_id]);
     await audit(user,'update','organization',user.organization_id);
@@ -303,7 +307,10 @@ async function api(req,res,url) {
     return json(res,200,{stats:{staff:num(stats.staff),activeToday:num(stats.activeToday),pending:num(stats.pending),openShifts:num(stats.openShifts)},shifts,activity});
   }
   if(pathname==='/api/staff'&&req.method==='GET') {
-    return json(res,200,{staff:await q.all(`SELECT id,name,email,role,job_title "jobTitle",phone,status,created_at "createdAt" FROM users WHERE organization_id=? ORDER BY name`, [user.organization_id])});
+    const staff=await q.all(`SELECT id,name,email,role,job_title "jobTitle",phone,status,created_at "createdAt" FROM users WHERE organization_id=? ORDER BY name`, [user.organization_id]);
+    // Contact details (email/phone) are only exposed to managers/owners.
+    const scoped=manager(user)?staff:staff.map(s=>({...s,email:'',phone:''}));
+    return json(res,200,{staff:scoped});
   }
   if(pathname==='/api/staff'&&req.method==='POST') {
     if(!manager(user)) return fail(res,403,'Недостаточно прав');
@@ -475,6 +482,7 @@ async function api(req,res,url) {
     return json(res,200,{days,roles});
   }
   if(pathname.startsWith('/api/export/')&&req.method==='GET') {
+    if(!manager(user)) return fail(res,403,'Недостаточно прав');
     const from=url.searchParams.get('from')||new Date(Date.now()-14*86400000).toISOString();
     const to=url.searchParams.get('to')||new Date(Date.now()+31*86400000).toISOString();
     const attach=(name,type)=>({'Content-Type':type,'Content-Disposition':`attachment; filename="${name}"`,'Cache-Control':'no-store'});
@@ -508,14 +516,21 @@ const allowedOrigins=(process.env.CORS_ORIGINS||'').split(',').map(s=>s.trim()).
 function applyCors(req,res){
   const origin=req.headers.origin;
   if(!origin) return;
-  if(allowedOrigins.includes('*')||allowedOrigins.includes(origin)){
+  const explicit=allowedOrigins.includes(origin);
+  const wildcard=allowedOrigins.includes('*');
+  if(!explicit&&!wildcard) return;
+  // Credentials are only reflected for an explicitly allowed origin; a wildcard
+  // config falls back to anonymous '*' (never arbitrary-origin + credentials).
+  if(explicit){
     res.setHeader('Access-Control-Allow-Origin',origin);
-    res.setHeader('Vary','Origin');
     res.setHeader('Access-Control-Allow-Credentials','true');
-    res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
-    res.setHeader('Access-Control-Max-Age','86400');
+    res.setHeader('Vary','Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin','*');
   }
+  res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
+  res.setHeader('Access-Control-Max-Age','86400');
 }
 
 const server=http.createServer(async(req,res)=>{
