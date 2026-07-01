@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import WebSocket from 'ws';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
@@ -111,6 +112,78 @@ test('team chat: list, read, send and direct conversations', async () => {
   });
   assert.equal(again.status, 200);
   assert.equal((await again.json()).id, directId);
+});
+
+test('unread count updates after reading and receiving new messages', async () => {
+  const owner = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'demo@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const ivan = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'ivan@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const oAuth = { Authorization: `Bearer ${owner.token}` };
+  const iAuth = { Authorization: `Bearer ${ivan.token}` };
+
+  const generalId = (await (await fetch(`${base}/api/conversations`, { headers: oAuth })).json())
+    .conversations.find((c) => c.isGeneral).id;
+
+  const unread = async () => (await (await fetch(`${base}/api/conversations`, { headers: oAuth })).json())
+    .conversations.find((c) => c.isGeneral).unread;
+
+  // owner reads the general chat -> unread clears
+  await fetch(`${base}/api/conversations/${generalId}/messages`, { headers: oAuth });
+  assert.equal(await unread(), 0);
+
+  // a new message from someone else after the read must count again
+  // (regression: last_read_at vs created_at timestamp-format mismatch)
+  await new Promise((r) => setTimeout(r, 1100));
+  await fetch(`${base}/api/conversations/${generalId}/messages`, {
+    method: 'POST', headers: { ...iAuth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body: 'после прочтения' })
+  });
+  assert.equal(await unread(), 1);
+});
+
+test('websocket broadcasts a new message to conversation members', async () => {
+  const owner = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'demo@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const ivan = await (await fetch(`${base}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'ivan@shiftflow.local', password: 'Demo123!' })
+  })).json();
+  const generalId = (await (await fetch(`${base}/api/conversations`, {
+    headers: { Authorization: `Bearer ${owner.token}` }
+  })).json()).conversations.find((c) => c.isGeneral).id;
+
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${owner.token}`);
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+
+  const received = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('no ws message')), 4000);
+    ws.on('message', (data) => {
+      const evt = JSON.parse(data.toString());
+      if (evt.type === 'message') { clearTimeout(timer); resolve(evt); }
+    });
+  });
+
+  await fetch(`${base}/api/conversations/${generalId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${ivan.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body: 'через сокет' })
+  });
+
+  const evt = await received;
+  ws.close();
+  assert.equal(evt.conversationId, generalId);
+  assert.equal(evt.message.body, 'через сокет');
+  assert.equal(evt.message.userName, 'Иван Петров');
 });
 
 test('chat membership is enforced', async () => {

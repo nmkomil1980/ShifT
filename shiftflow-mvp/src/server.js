@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { q, audit, ensureGeneralChat } from './database.js';
 import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendToUsers } from './push.js';
+import { attachRealtime, broadcastToUsers } from './realtime.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -19,6 +20,9 @@ const json = (res, status, data, headers = {}) => {
 const fail = (res, status, message) => json(res,status,{error:message});
 const cleanUser = u => u && ({id:u.id,name:u.name,email:u.email,role:u.role,jobTitle:u.job_title,phone:u.phone,status:u.status,organizationId:u.organization_id,organizationName:u.organization_name});
 const nowIso = () => new Date().toISOString();
+// Matches the DB timestamp format ('YYYY-MM-DD HH:MM:SS', UTC) used by
+// created_at so that last_read_at string comparisons order correctly.
+const nowStamp = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 
 async function body(req) {
   const chunks=[]; let size=0;
@@ -265,7 +269,7 @@ async function api(req,res,url) {
     if(!member) return fail(res,404,'Диалог не найден');
     const messages=await q.all(`SELECT m.id,m.body,m.created_at "createdAt",m.user_id "userId",u.name "userName"
       FROM messages m JOIN users u ON u.id=m.user_id WHERE m.conversation_id=? ORDER BY m.id`, [id]);
-    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowIso(),id,user.id]);
+    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowStamp(),id,user.id]);
     return json(res,200,{messages});
   }
   if(/^\/api\/conversations\/\d+\/messages$/.test(pathname)&&req.method==='POST') {
@@ -275,7 +279,12 @@ async function api(req,res,url) {
     if(!member) return fail(res,404,'Диалог не найден');
     const d=await body(req); const text=required(d.body,'Сообщение',2000);
     const r=await q.insert('INSERT INTO messages(conversation_id,user_id,body) VALUES(?,?,?)', [id,user.id,text]);
-    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowIso(),id,user.id]);
+    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowStamp(),id,user.id]);
+    // Fan out the new message to every member's live sockets.
+    const created=await q.get('SELECT created_at FROM messages WHERE id=?', [r.id]);
+    const members=(await q.all('SELECT user_id FROM conversation_members WHERE conversation_id=?', [id])).map(m=>m.user_id);
+    broadcastToUsers(members,{type:'message',conversationId:id,message:{
+      id:r.id,body:text,createdAt:created.created_at,userId:user.id,userName:user.name}});
     return json(res,201,{id:r.id});
   }
   if(pathname==='/api/conversations/direct'&&req.method==='POST') {
@@ -346,5 +355,6 @@ const server=http.createServer(async(req,res)=>{
   try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else staticFile(res,url.pathname); }
   catch(error) { console.error(error); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
 });
+attachRealtime(server);
 server.listen(port,host,()=>console.log(`ShiftFlow: http://${host}:${port} (${process.env.DATABASE_URL?'postgres':'sqlite'})`));
 export { server };

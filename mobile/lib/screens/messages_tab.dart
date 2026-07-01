@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../theme.dart';
 import '../api/api_client.dart';
+import '../api/realtime_service.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
 import 'chat_screen.dart';
@@ -15,11 +17,21 @@ class MessagesTab extends StatefulWidget {
 class _MessagesTabState extends State<MessagesTab> {
   List<Conversation> _items = [];
   bool _loading = true;
+  StreamSubscription? _rt;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _rt = RealtimeService.instance.events.listen((evt) {
+      if (evt['type'] == 'message' && mounted) _load();
+    });
+  }
+
+  @override
+  void dispose() {
+    _rt?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {

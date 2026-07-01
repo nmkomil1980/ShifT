@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../theme.dart';
+import '../api/api_client.dart';
+import '../api/realtime_service.dart';
 import 'home_tab.dart';
 import 'calendar_tab.dart';
 import 'messages_tab.dart';
@@ -13,8 +16,39 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  int _unread = 0;
+  StreamSubscription? _rt;
 
-  static const _titles = ['ShiftFlow', 'ShiftFlow', 'ShiftFlow', 'ShiftFlow'];
+  @override
+  void initState() {
+    super.initState();
+    RealtimeService.instance.connect();
+    _refreshUnread();
+    _rt = RealtimeService.instance.events.listen((evt) {
+      if (evt['type'] == 'message') _refreshUnread();
+    });
+  }
+
+  @override
+  void dispose() {
+    _rt?.cancel();
+    RealtimeService.instance.disconnect();
+    super.dispose();
+  }
+
+  Future<void> _refreshUnread() async {
+    try {
+      final data = await ApiClient.instance.get('/conversations');
+      final total = (data['conversations'] as List)
+          .fold<int>(0, (sum, c) => sum + ((c['unread'] as int?) ?? 0));
+      if (mounted) setState(() => _unread = total);
+    } catch (_) {/* ignore */}
+  }
+
+  void _select(int i) {
+    setState(() => _index = i);
+    if (i == 2) _refreshUnread(); // opening the Team/Messages tab
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,9 +59,16 @@ class _HomeShellState extends State<HomeShell> {
       const ProfileTab(),
     ];
 
+    Widget teamIcon(IconData icon, Color color) {
+      final child = Icon(icon, color: color);
+      return _unread > 0
+          ? Badge.count(count: _unread, child: child)
+          : child;
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(_titles[_index]),
+        title: const Text('ShiftFlow'),
         leading: const Icon(Icons.bubble_chart_outlined),
         actions: const [
           Padding(
@@ -53,23 +94,23 @@ class _HomeShellState extends State<HomeShell> {
         child: NavigationBar(
           selectedIndex: _index,
           height: 64,
-          onDestinationSelected: (i) => setState(() => _index = i),
-          destinations: const [
-            NavigationDestination(
+          onDestinationSelected: _select,
+          destinations: [
+            const NavigationDestination(
                 icon: Icon(Icons.home_outlined, color: AppColors.textMuted),
                 selectedIcon: Icon(Icons.home, color: AppColors.indigo),
                 label: 'Home'),
-            NavigationDestination(
+            const NavigationDestination(
                 icon: Icon(Icons.calendar_today_outlined,
                     color: AppColors.textMuted),
                 selectedIcon:
                     Icon(Icons.calendar_today, color: AppColors.indigo),
                 label: 'Calendar'),
             NavigationDestination(
-                icon: Icon(Icons.people_outline, color: AppColors.textMuted),
-                selectedIcon: Icon(Icons.people, color: AppColors.indigo),
+                icon: teamIcon(Icons.people_outline, AppColors.textMuted),
+                selectedIcon: teamIcon(Icons.people, AppColors.indigo),
                 label: 'Team'),
-            NavigationDestination(
+            const NavigationDestination(
                 icon: Icon(Icons.person_outline, color: AppColors.textMuted),
                 selectedIcon: Icon(Icons.person, color: AppColors.indigo),
                 label: 'Profile'),
