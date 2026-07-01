@@ -28,7 +28,7 @@ async function waitForHealth(retries = 40) {
 test.before(async () => {
   server = spawn(process.execPath, ['src/server.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), DATABASE_PATH: dbPath, CORS_ORIGINS: 'http://localhost:5173', MAIL_DEV_RETURN_TOKEN: '1', APP_URL: 'http://localhost:5173' },
+    env: { ...process.env, PORT: String(port), DATABASE_PATH: dbPath, CORS_ORIGINS: 'http://localhost:5173', MAIL_DEV_RETURN_TOKEN: '1', APP_URL: 'http://localhost:5173', AUTH_RATE_LIMIT: '200' },
     stdio: 'ignore'
   });
   await waitForHealth();
@@ -381,6 +381,32 @@ test('billing: trial, subscribe and invoice history', async () => {
   assert.equal(after.billing.paymentMethod.last4, '4242');
   assert.equal(after.invoices.length, 1);
   assert.equal(after.invoices[0].amountCents, 14900);
+});
+
+test('auth endpoints are rate limited per IP', async () => {
+  // Use a spoofed X-Forwarded-For so this does not consume the shared 127.0.0.1
+  // budget the other tests rely on. Limit in tests is 200.
+  const headers = { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.9' };
+  let sawLimit = false;
+  for (let i = 0; i < 205; i++) {
+    const res = await fetch(`${base}/api/auth/login`, {
+      method: 'POST', headers, body: JSON.stringify({ email: 'x@x', password: 'bad' })
+    });
+    if (res.status === 429) { sawLimit = true; break; }
+  }
+  assert.ok(sawLimit, 'expected a 429 after exceeding the limit');
+});
+
+test('logout-all revokes every session for the user', async () => {
+  const a = await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }));
+  const b = await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }));
+  // both tokens work
+  assert.equal((await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${a.token}` } })).status, 200);
+
+  assert.equal((await post('/api/auth/logout-all', {}, a.token)).status, 200);
+  // both are now invalid
+  assert.equal((await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${a.token}` } })).status, 401);
+  assert.equal((await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${b.token}` } })).status, 401);
 });
 
 test('CORS preflight is answered for allowed origin', async () => {

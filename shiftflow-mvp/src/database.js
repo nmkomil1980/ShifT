@@ -106,6 +106,7 @@ async function ensureColumn(table, column, definition) {
 }
 await ensureColumn('organizations', 'settings', `TEXT NOT NULL DEFAULT '{}'`);
 await ensureColumn('users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0');
+await ensureColumn('sessions', 'last_used_at', `TEXT NOT NULL DEFAULT ''`);
 
 /**
  * Ensure the org has a "General Team Chat" group and that `userId` belongs to

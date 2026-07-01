@@ -10,6 +10,7 @@ import { attachRealtime, broadcastToUsers } from './realtime.js';
 import { sendMail, templates, appUrl } from './mailer.js';
 import { createEmailToken, consumeEmailToken } from './emailtokens.js';
 import { shiftsCsv, staffCsv, shiftsPdf } from './export.js';
+import { rateLimit } from './ratelimit.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -17,6 +18,9 @@ const publicDir = path.join(root, 'public');
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '127.0.0.1';
 const sessionSeconds = Number(process.env.SESSION_DAYS || 14) * 86400;
+// Optional sliding idle timeout: sessions unused for this long become invalid.
+// Unset (0) keeps only the absolute SESSION_DAYS expiry.
+const idleSeconds = Number(process.env.SESSION_IDLE_HOURS || 0) * 3600;
 
 const json = (res, status, data, headers = {}) => {
   res.writeHead(status, {'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers});
@@ -56,14 +60,30 @@ function bearerToken(req) {
 async function currentUser(req) {
   const token = bearerToken(req) || parseCookies(req.headers.cookie).sf_session;
   if (!token) return null;
-  return q.get(`SELECT u.*,o.name organization_name FROM sessions s JOIN users u ON u.id=s.user_id
+  const row = await q.get(`SELECT u.*,o.name organization_name,s.id sid,s.last_used_at last_used
+    FROM sessions s JOIN users u ON u.id=s.user_id
     JOIN organizations o ON o.id=u.organization_id WHERE s.token_hash=? AND s.expires_at>? AND u.status='active'`,
     [tokenHash(token), nowIso()]);
+  if (!row) return null;
+  const now = Date.now();
+  if (idleSeconds && row.last_used) {
+    const last = new Date(String(row.last_used).replace(' ', 'T') + 'Z').getTime();
+    if (Number.isFinite(last) && now - last > idleSeconds * 1000) {
+      await q.run('DELETE FROM sessions WHERE id=?', [row.sid]);
+      return null;
+    }
+  }
+  // Throttle last_used writes to at most once per 5 minutes.
+  const last = row.last_used ? new Date(String(row.last_used).replace(' ', 'T') + 'Z').getTime() : 0;
+  if (now - last > 5 * 60 * 1000) {
+    await q.run('UPDATE sessions SET last_used_at=? WHERE id=?', [nowStamp(), row.sid]);
+  }
+  return row;
 }
 
 async function createSession(userId) {
   const token=randomToken(), expires=new Date(Date.now()+sessionSeconds*1000).toISOString();
-  await q.run('INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)', [userId,tokenHash(token),expires]);
+  await q.run('INSERT INTO sessions(user_id,token_hash,expires_at,last_used_at) VALUES(?,?,?,?)', [userId,tokenHash(token),expires,nowStamp()]);
   return token;
 }
 
@@ -95,6 +115,13 @@ const validDate = value => {
 async function api(req,res,url) {
   const {pathname}=url;
   if(pathname==='/api/health') return json(res,200,{status:'ok',time:nowIso()});
+  // Rate-limit sensitive auth endpoints per client IP (behind a proxy the real
+  // IP is the first X-Forwarded-For entry).
+  if(req.method==='POST'&&['/api/auth/login','/api/auth/register','/api/auth/forgot-password','/api/auth/reset-password','/api/auth/accept-invite'].includes(pathname)){
+    const ip=String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket?.remoteAddress||'unknown';
+    const {allowed,retryAfter}=rateLimit(`${ip}:${pathname}`,Number(process.env.AUTH_RATE_LIMIT||10),Number(process.env.AUTH_RATE_WINDOW_MIN||15)*60*1000);
+    if(!allowed) return json(res,429,{error:'Слишком много попыток. Попробуйте позже.'},{'Retry-After':String(retryAfter)});
+  }
   if(req.method==='POST'&&pathname==='/api/auth/register') {
     const data=await body(req); const name=required(data.name,'Имя',100), company=required(data.company,'Компания',120);
     const email=required(data.email,'Email',200).toLowerCase();
@@ -116,6 +143,7 @@ async function api(req,res,url) {
     const data=await body(req);
     const user=await q.get(`SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.email=? AND u.status='active'`,[String(data.email||'').toLowerCase()]);
     if(!user||!passwordMatches(String(data.password||''),user.password_hash)) return fail(res,401,'Неверный email или пароль');
+    await q.run('DELETE FROM sessions WHERE expires_at<?', [nowIso()]); // prune expired
     const token=await createSession(user.id); await audit(user,'login','session',null);
     return json(res,200,{token,user:cleanUser(user)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
   }
@@ -160,6 +188,10 @@ async function api(req,res,url) {
   }
   const user=await currentUser(req);
   if(!user) return fail(res,401,'Требуется авторизация');
+  if(pathname==='/api/auth/logout-all'&&req.method==='POST') {
+    await q.run('DELETE FROM sessions WHERE user_id=?', [user.id]);
+    return json(res,200,{ok:true},{'Set-Cookie':clearSessionCookie()});
+  }
   if(pathname==='/api/me'&&req.method==='GET') return json(res,200,{user:cleanUser(user)});
   if(pathname==='/api/me'&&req.method==='PATCH') {
     const d=await body(req);
