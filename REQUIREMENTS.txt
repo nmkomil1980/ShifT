@@ -1,0 +1,50 @@
+ShiftFlow — сводный список зависимостей (аналог requirements.txt)
+================================================================
+Источник истины — манифесты в каждом проекте (package.json / pubspec.yaml).
+Установить всё сразу: setup.cmd (Windows) или ./setup.sh (macOS/Linux).
+
+Среды выполнения
+----------------
+node       >=22 (рекомендуется 24+)
+flutter    >=3.27   (Dart >=3.4)
+docker     любой актуальный (для запуска всего стека)
+postgresql 16       (в проде; в dev — встроенный node:sqlite)
+
+
+[backend]  shiftflow-mvp — npm install
+---------------------------------------
+@sentry/node   ^8.47.0     # мониторинг ошибок
+nodemailer     ^6.9.16     # email (приглашения/сброс/подтверждение)
+pdfkit         ^0.15.1     # PDF-экспорт расписания
+pg             ^8.13.1     # драйвер PostgreSQL
+web-push       ^3.6.7      # Web Push (VAPID)
+ws             ^8.18.0     # WebSocket (чат в реальном времени)
+# node:sqlite, node:crypto, node:http — встроены в Node, установка не требуется
+
+
+[web]  web-admin — npm install
+------------------------------
+# runtime
+react              ^19.2.0
+react-dom          ^19.2.0
+react-router-dom   ^7.1.1
+@sentry/browser    ^8.47.0
+# dev / build / test
+vite               ^6.0.7
+@vitejs/plugin-react ^4.3.4
+vitest             ^2.1.8
+jsdom              ^25.0.1
+@testing-library/react ^16.1.0
+
+
+[mobile]  mobile — flutter pub get
+----------------------------------
+# runtime
+http                 ^1.2.2     # REST-клиент
+shared_preferences   ^2.3.2     # хранение токена
+intl                 ^0.19.0    # форматирование дат (ru/en)
+web_socket_channel   ^3.0.1     # WebSocket (чат)
+sentry_flutter       ^8.9.0     # мониторинг ошибок
+# dev
+flutter_lints        ^4.0.0
+flutter_test         (sdk: flutter)

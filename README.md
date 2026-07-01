@@ -34,7 +34,8 @@ setup.cmd
 ```
 
 Скрипт ставит зависимости бэкенда и веб-консоли (`npm install`) и мобильного
-приложения (`flutter pub get`). Либо вручную по проектам:
+приложения (`flutter pub get`). Полный список библиотек с версиями — в
+[REQUIREMENTS.txt](REQUIREMENTS.txt). Либо вручную по проектам:
 
 ```bash
 cd shiftflow-mvp && npm install
