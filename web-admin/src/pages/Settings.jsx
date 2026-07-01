@@ -13,6 +13,7 @@ const WEEKDAYS = [
 export default function Settings() {
   const { user } = useAuth();
   const isManager = ['owner', 'manager'].includes(user.role);
+  const isOwner = user.role === 'owner';
   const [tab, setTab] = useState(isManager ? 'company' : 'profile');
 
   return (
@@ -21,11 +22,11 @@ export default function Settings() {
         <div className="page-head"><h2>Настройки</h2><p>Управление организацией и личным профилем.</p></div>
         <div className="tabs">
           {isManager && <button className={tab === 'company' ? 'active' : ''} onClick={() => setTab('company')}>Компания</button>}
-          {isManager && <button className={tab === 'billing' ? 'active' : ''} onClick={() => setTab('billing')}>Подписка</button>}
+          {isOwner && <button className={tab === 'billing' ? 'active' : ''} onClick={() => setTab('billing')}>Подписка</button>}
           <button className={tab === 'profile' ? 'active' : ''} onClick={() => setTab('profile')}>Мой профиль</button>
         </div>
         {tab === 'company' && isManager ? <CompanyTab />
-          : tab === 'billing' && isManager ? <BillingTab />
+          : tab === 'billing' && isOwner ? <BillingTab />
           : <ProfileTab />}
       </div>
     </Layout>

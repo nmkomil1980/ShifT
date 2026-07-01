@@ -409,6 +409,32 @@ test('logout-all revokes every session for the user', async () => {
   assert.equal((await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${b.token}` } })).status, 401);
 });
 
+test('RBAC: owner-only billing and role assignment', async () => {
+  const owner = (await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }))).token;
+  const mgr = (await json(await post('/api/auth/login', { email: 'elena@shiftflow.local', password: 'Demo123!' }))).token;
+
+  // a manager cannot touch billing
+  assert.equal((await post('/api/billing/subscribe', { plan: 'monthly' }, mgr)).status, 403);
+
+  // a manager creating staff with role=manager is forced to employee
+  const made = await json(await post('/api/staff', { name: 'RBAC One', email: 'rbac1@shiftflow.local', role: 'manager' }, mgr));
+  const list1 = await json(await fetch(`${base}/api/staff`, { headers: { Authorization: `Bearer ${mgr}` } }));
+  assert.equal(list1.staff.find((s) => s.id === made.id).role, 'employee');
+
+  // a manager cannot promote that employee to manager
+  await fetch(`${base}/api/staff/${made.id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mgr}` },
+    body: JSON.stringify({ role: 'manager' })
+  });
+  const list2 = await json(await fetch(`${base}/api/staff`, { headers: { Authorization: `Bearer ${mgr}` } }));
+  assert.equal(list2.staff.find((s) => s.id === made.id).role, 'employee');
+
+  // the owner can create a manager
+  const mgrMade = await json(await post('/api/staff', { name: 'RBAC Two', email: 'rbac2@shiftflow.local', role: 'manager' }, owner));
+  const list3 = await json(await fetch(`${base}/api/staff`, { headers: { Authorization: `Bearer ${owner}` } }));
+  assert.equal(list3.staff.find((s) => s.id === mgrMade.id).role, 'manager');
+});
+
 test('CORS preflight is answered for allowed origin', async () => {
   const res = await fetch(`${base}/api/me`, {
     method: 'OPTIONS',

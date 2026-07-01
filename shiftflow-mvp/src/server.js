@@ -87,7 +87,12 @@ async function createSession(userId) {
   return token;
 }
 
+// Role policy:
+//   owner    — everything, incl. billing and assigning manager/owner roles
+//   manager  — staff (employees only), shifts, requests, org settings, exports
+//   employee — own profile/requests, chat, viewing the schedule
 const manager = user => ['owner','manager'].includes(user.role);
+const isOwner = user => user.role === 'owner';
 
 // Subscription plans (mock billing — no real payment processor wired in; the
 // subscribe endpoint records an invoice and flips the org's plan so the flow is
@@ -244,7 +249,7 @@ async function api(req,res,url) {
     });
   }
   if(pathname==='/api/billing/subscribe'&&req.method==='POST') {
-    if(!manager(user)) return fail(res,403,'Недостаточно прав');
+    if(!isOwner(user)) return fail(res,403,'Только владелец может управлять подпиской');
     const d=await body(req); const plan=PLANS[d.plan];
     if(!plan) return fail(res,422,'Неизвестный тариф');
     const {settings}=await loadOrg(user.organization_id);
@@ -256,7 +261,7 @@ async function api(req,res,url) {
     return json(res,200,{ok:true,plan:plan.id});
   }
   if(pathname==='/api/billing/payment-method'&&req.method==='POST') {
-    if(!manager(user)) return fail(res,403,'Недостаточно прав');
+    if(!isOwner(user)) return fail(res,403,'Только владелец может управлять оплатой');
     const d=await body(req);
     const last4=String(d.last4||'').replace(/\D/g,'').slice(-4);
     if(last4.length!==4) return fail(res,422,'Некорректный номер карты');
@@ -309,8 +314,9 @@ async function api(req,res,url) {
     const invite=!hasPassword;
     const passwordHashValue=passwordHash(hasPassword?d.password:randomToken());
     try {
+      const role=isOwner(user)?(['manager','employee'].includes(d.role)?d.role:'employee'):'employee';
       const result=await q.insert(`INSERT INTO users(organization_id,name,email,password_hash,role,job_title,phone) VALUES(?,?,?,?,?,?,?)`,
-        [user.organization_id,required(d.name,'Имя',100),email,passwordHashValue,['manager','employee'].includes(d.role)?d.role:'employee',String(d.jobTitle||'').slice(0,100),String(d.phone||'').slice(0,40)]);
+        [user.organization_id,required(d.name,'Имя',100),email,passwordHashValue,role,String(d.jobTitle||'').slice(0,100),String(d.phone||'').slice(0,40)]);
       await ensureGeneralChat(user.organization_id,result.id);
       await audit(user,'create','user',result.id,{email});
       let raw=null;
@@ -321,8 +327,11 @@ async function api(req,res,url) {
   if(pathname.startsWith('/api/staff/')&&req.method==='PATCH') {
     if(!manager(user)) return fail(res,403,'Недостаточно прав'); const id=idFrom(pathname,'/api/staff/'),d=await body(req);
     const target=await q.get('SELECT * FROM users WHERE id=? AND organization_id=?', [id,user.organization_id]); if(!target)return fail(res,404,'Сотрудник не найден');
+    // Managers may only edit employees and cannot change roles; owners can.
+    if(!isOwner(user)&&target.role!=='employee') return fail(res,403,'Можно изменять только сотрудников');
+    const newRole=isOwner(user)?(['owner','manager','employee'].includes(d.role)?d.role:target.role):target.role;
     await q.run(`UPDATE users SET name=?,role=?,job_title=?,phone=?,status=? WHERE id=?`, [
-      String(d.name??target.name).slice(0,100), ['owner','manager','employee'].includes(d.role)?d.role:target.role,
+      String(d.name??target.name).slice(0,100), newRole,
       String(d.jobTitle??target.job_title).slice(0,100),String(d.phone??target.phone).slice(0,40),['active','inactive'].includes(d.status)?d.status:target.status,id]);
     await audit(user,'update','user',id); return json(res,200,{ok:true});
   }
