@@ -36,6 +36,23 @@ class AuthController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> register({
+    required String name,
+    required String company,
+    required String email,
+    required String password,
+  }) async {
+    final data = await api.post('/auth/register', {
+      'name': name,
+      'company': company,
+      'email': email,
+      'password': password,
+    });
+    await api.setToken(data['token'] as String?);
+    user = AppUser.fromJson(data['user']);
+    notifyListeners();
+  }
+
   Future<void> logout() async {
     try {
       await api.post('/auth/logout');
