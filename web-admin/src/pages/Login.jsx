@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
+import { useI18n } from '../lib/i18n.jsx';
 
 export default function Login() {
   const { login } = useAuth();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [email, setEmail] = useState('demo@shiftflow.local');
   const [password, setPassword] = useState('Demo123!');
@@ -18,7 +20,7 @@ export default function Login() {
       await login(email.trim(), password);
       navigate('/', { replace: true });
     } catch (err) {
-      setError(err.message || 'Не удалось войти');
+      setError(err.message || t('login.error'));
     } finally {
       setBusy(false);
     }
@@ -33,30 +35,30 @@ export default function Login() {
             <rect x="6" y="13" width="14" height="5" rx="1.5" transform="rotate(-12 13 15)" />
           </svg>
         </div>
-        <h2>Вход в систему</h2>
-        <p className="sub">Добро пожаловать в ShiftFlow</p>
+        <h2>{t('login.title')}</h2>
+        <p className="sub">{t('login.welcome')}</p>
 
         {error && <div className="auth-error">{error}</div>}
 
         <div className="field">
-          <label htmlFor="email">Электронная почта</label>
+          <label htmlFor="email">{t('login.email')}</label>
           <input id="email" type="email" value={email} autoComplete="username"
             onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" required />
         </div>
         <div className="field">
           <label htmlFor="password">
-            Пароль <a className="link" href="/forgot-password" onClick={(e) => { e.preventDefault(); navigate('/forgot-password'); }}>Забыли пароль?</a>
+            {t('login.password')} <a className="link" href="/forgot-password" onClick={(e) => { e.preventDefault(); navigate('/forgot-password'); }}>{t('login.forgot')}</a>
           </label>
           <input id="password" type="password" value={password} autoComplete="current-password"
             onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required />
         </div>
 
         <button className="btn primary" type="submit" disabled={busy}>
-          {busy ? 'Вход…' : 'Войти'}
+          {busy ? t('login.busy') : t('login.submit')}
         </button>
 
         <p className="auth-switch">
-          Нет аккаунта? <a className="link" href="/register" onClick={(e) => { e.preventDefault(); navigate('/register'); }}>Зарегистрировать компанию</a>
+          {t('login.noAccount')} <a className="link" href="/register" onClick={(e) => { e.preventDefault(); navigate('/register'); }}>{t('login.register')}</a>
         </p>
       </form>
     </div>

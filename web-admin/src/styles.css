@@ -67,6 +67,7 @@ button { font-family: inherit; cursor: pointer; }
 .sidebar-cta:hover { background: var(--indigo-600); }
 .sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 4px; padding-top: 16px; border-top: 1px solid var(--border); }
 .sidebar-foot a { color: var(--text-muted); }
+.lang-select { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-muted); font-size: 14px; font-family: inherit; }
 
 /* ---------- Main column ---------- */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
