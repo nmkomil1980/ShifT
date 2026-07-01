@@ -19,26 +19,32 @@ export default function Calendar() {
   const { user } = useAuth();
   const isManager = ['owner', 'manager'].includes(user?.role);
   const [params, setParams] = useSearchParams();
-  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [view, setView] = useState('week'); // 'week' | 'month'
+  const [anchor, setAnchor] = useState(() => new Date());
   const [shifts, setShifts] = useState(null);
   const [staff, setStaff] = useState([]);
   const [defaultHours, setDefaultHours] = useState(8);
-  const [showAdd, setShowAdd] = useState(params.get('new') === '1');
-  const [addDay, setAddDay] = useState(null);
+  const [modal, setModal] = useState(null); // { day } to create, { shift } to edit
   const [dropError, setDropError] = useState('');
   const [dragOverKey, setDragOverKey] = useState(null);
 
-  const days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(weekStart); d.setDate(d.getDate() + i); return d;
+  // Visible range depends on the view: a Mon-start week, or a 6-week month grid.
+  const weekStart = startOfWeek(anchor);
+  const gridStart = view === 'week'
+    ? weekStart
+    : startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+  const dayCount = view === 'week' ? 7 : 42;
+  const rangeDays = Array.from({ length: dayCount }, (_, i) => {
+    const d = new Date(gridStart); d.setDate(d.getDate() + i); return d;
   });
-  const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
+  const rangeEnd = new Date(gridStart); rangeEnd.setDate(rangeEnd.getDate() + dayCount);
   const todayKey = dayKey(new Date());
 
   const load = useCallback(() => {
     setShifts(null);
-    api.get(`/shifts?from=${weekStart.toISOString()}&to=${weekEnd.toISOString()}`)
+    api.get(`/shifts?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`)
       .then((d) => setShifts(d.shifts)).catch(() => setShifts([]));
-  }, [weekStart.getTime()]);
+  }, [gridStart.getTime(), dayCount]);
   useEffect(load, [load]);
   useEffect(() => { api.get('/staff').then((d) => setStaff(d.staff)).catch(() => {}); }, []);
   useEffect(() => {
@@ -47,174 +53,217 @@ export default function Calendar() {
       .catch(() => {});
   }, []);
 
-  // Drag-and-drop: drop a roster member onto a day to create a shift, or drag an
-  // existing shift chip to another day to reschedule it (keeping time of day).
+  // Open the create modal if navigated to with ?new=1.
+  useEffect(() => {
+    if (params.get('new') === '1') { setModal({ day: new Date() }); params.delete('new'); setParams(params, { replace: true }); }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drag-and-drop (week view): drop a roster member onto a day to create a
+  // shift, or drag a shift chip to another day to reschedule it.
   function onDropDay(day, e) {
     e.preventDefault();
     setDragOverKey(null);
     setDropError('');
     let payload;
     try { payload = JSON.parse(e.dataTransfer.getData('application/json')); } catch { return; }
-
     if (payload.kind === 'staff') {
       const start = new Date(day); start.setHours(9, 0, 0, 0);
       const end = new Date(start.getTime() + defaultHours * 3600000);
-      api.post('/shifts', {
-        title: 'Смена', userId: payload.id, location: '',
-        startsAt: start.toISOString(), endsAt: end.toISOString()
-      }).then(load).catch((err) => setDropError(err.message));
+      api.post('/shifts', { title: 'Смена', userId: payload.id, location: '', startsAt: start.toISOString(), endsAt: end.toISOString() })
+        .then(load).catch((err) => setDropError(err.message));
     } else if (payload.kind === 'shift') {
       const oldStart = new Date(payload.startsAt);
       const duration = new Date(payload.endsAt) - oldStart;
       const start = new Date(day);
       start.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
-      const end = new Date(start.getTime() + duration);
       if (dayKey(start) === dayKey(oldStart)) return;
-      api.patch(`/shifts/${payload.id}`, {
-        startsAt: start.toISOString(), endsAt: end.toISOString()
-      }).then(load).catch((err) => setDropError(err.message));
+      const end = new Date(start.getTime() + duration);
+      api.patch(`/shifts/${payload.id}`, { startsAt: start.toISOString(), endsAt: end.toISOString() })
+        .then(load).catch((err) => setDropError(err.message));
     }
   }
 
-  function closeAdd() {
-    setShowAdd(false); setAddDay(null);
-    if (params.get('new')) { params.delete('new'); setParams(params, { replace: true }); }
+  function navigate(delta) {
+    const d = new Date(anchor);
+    if (view === 'week') d.setDate(d.getDate() + delta * 7);
+    else d.setMonth(d.getMonth() + delta);
+    setAnchor(d);
   }
-  function openAdd(day) { setAddDay(day); setShowAdd(true); }
-  function shiftWeek(delta) { const d = new Date(weekStart); d.setDate(d.getDate() + delta * 7); setWeekStart(d); }
+  const dragProps = (day) => (isManager && view === 'week') ? {
+    onDragOver: (e) => { e.preventDefault(); setDragOverKey(dayKey(day)); },
+    onDragLeave: () => setDragOverKey((k) => (k === dayKey(day) ? null : k)),
+    onDrop: (e) => onDropDay(day, e),
+  } : {};
 
   const byDay = {};
   (shifts || []).forEach((s) => { (byDay[dayKey(s.starts_at)] ||= []).push(s); });
 
+  const periodLabel = view === 'week'
+    ? `${rangeDays[0].getDate()} ${RU_MONTHS[rangeDays[0].getMonth()]} – ${rangeDays[6].getDate()} ${RU_MONTHS[rangeDays[6].getMonth()]} ${rangeDays[6].getFullYear()}`
+    : `${RU_MONTHS[anchor.getMonth()]} ${anchor.getFullYear()}`;
+
+  const Chip = ({ s, compact }) => {
+    const st = statusMeta(s.status);
+    return (
+      <div className={`shift-chip ${st.cls} ${compact ? 'compact' : ''}`} title={`${s.user_name || 'Открытая'} · ${s.title}`}
+        draggable={isManager && view === 'week'}
+        onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ kind: 'shift', id: s.id, startsAt: s.starts_at, endsAt: s.ends_at }))}
+        onClick={() => isManager && setModal({ shift: s })}>
+        <b>{timeRange(s.starts_at, s.ends_at)}</b>
+        {!compact && <div className="who">{s.user_name || 'Открытая'}</div>}
+        {!compact && <div className="role">{s.job_title || s.title}</div>}
+        {compact && <span className="who"> {s.user_name || 'Открытая'}</span>}
+      </div>
+    );
+  };
+
   return (
-    <Layout onQuickAdd={() => openAdd(new Date())}>
+    <Layout onQuickAdd={() => setModal({ day: new Date() })}>
       <div className="page">
-        <div className="page-head"><h2>Календарь смен</h2>
-          <p>{weekStart.getDate()} {RU_MONTHS[weekStart.getMonth()]} – {days[6].getDate()} {RU_MONTHS[days[6].getMonth()]} {days[6].getFullYear()}</p>
-        </div>
+        <div className="page-head"><h2>Календарь смен</h2><p>{periodLabel}</p></div>
 
         <div className="cal-head">
           <div className="seg">
-            <button>День</button><button className="active">Неделя</button><button>Месяц</button>
+            <button className={view === 'week' ? 'active' : ''} onClick={() => setView('week')}>Неделя</button>
+            <button className={view === 'month' ? 'active' : ''} onClick={() => setView('month')}>Месяц</button>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="icon-btn" onClick={() => shiftWeek(-1)}><I.ChevronLeft width={18} height={18} /></button>
-            <button className="btn" onClick={() => setWeekStart(startOfWeek(new Date()))}>Сегодня</button>
-            <button className="icon-btn" onClick={() => shiftWeek(1)}><I.ChevronRight width={18} height={18} /></button>
+            <button className="icon-btn" onClick={() => navigate(-1)}><I.ChevronLeft width={18} height={18} /></button>
+            <button className="btn" onClick={() => setAnchor(new Date())}>Сегодня</button>
+            <button className="icon-btn" onClick={() => navigate(1)}><I.ChevronRight width={18} height={18} /></button>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <button className="btn" onClick={() => {
-              const from = weekStart.toISOString(), to = days[6].toISOString();
-              download(`/export/shifts.csv?from=${from}&to=${to}`, 'shifts.csv').catch((e) => setDropError(e.message));
-            }}>Экспорт CSV</button>
-            <button className="btn" onClick={() => {
-              const from = weekStart.toISOString(), to = days[6].toISOString();
-              download(`/export/shifts.pdf?from=${from}&to=${to}`, 'schedule.pdf').catch((e) => setDropError(e.message));
-            }}>PDF</button>
-            {isManager && <button className="btn primary" onClick={() => openAdd(new Date())}><I.Plus width={18} height={18} /> Новая смена</button>}
+            <button className="btn" onClick={() => download(`/export/shifts.csv?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'shifts.csv').catch((e) => setDropError(e.message))}>Экспорт CSV</button>
+            <button className="btn" onClick={() => download(`/export/shifts.pdf?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'schedule.pdf').catch((e) => setDropError(e.message))}>PDF</button>
+            {isManager && <button className="btn primary" onClick={() => setModal({ day: new Date() })}><I.Plus width={18} height={18} /> Новая смена</button>}
           </div>
         </div>
 
         {dropError && <div className="auth-error" style={{ marginBottom: 12 }}>{dropError}</div>}
-        {!shifts ? <div className="card card-pad"><div className="spinner" /></div> : (
+
+        {!shifts ? <div className="card card-pad"><div className="spinner" /></div> : view === 'week' ? (
           <div className="cal-layout">
-          <div className="cal-grid">
-            {days.map((d) => {
+            <div className="cal-grid">
+              {rangeDays.map((d) => {
+                const key = dayKey(d);
+                const list = (byDay[key] || []).sort((a, b) => a.starts_at < b.starts_at ? -1 : 1);
+                return (
+                  <div className={`cal-col ${dragOverKey === key ? 'drag-over' : ''}`} key={key} {...dragProps(d)}>
+                    <div className={`cal-colhead ${key === todayKey ? 'today' : ''}`}>
+                      <small>{RU_DAYS[d.getDay()]}</small><b>{d.getDate()}</b>
+                    </div>
+                    <div className="cal-body">
+                      {list.map((s) => <Chip key={s.id} s={s} />)}
+                      {isManager && (
+                        <button className="qa" style={{ padding: '10px', borderStyle: 'dashed', color: 'var(--text-faint)' }} onClick={() => setModal({ day: d })}>
+                          <I.Plus width={16} height={16} /> Добавить
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {isManager && (
+              <aside className="roster card card-pad">
+                <h3 style={{ margin: '0 0 4px' }}>Свободные</h3>
+                <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: '0 0 14px' }}>Перетащите на день для назначения</p>
+                {staff.filter((s) => s.status === 'active').map((s) => (
+                  <div key={s.id} className="roster-item" draggable
+                    onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ kind: 'staff', id: s.id }))}>
+                    <div className="avatar">{initials(s.name)}</div>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{s.name}</div>
+                      <div style={{ color: 'var(--text-faint)', fontSize: 12 }}>{s.jobTitle || s.role}</div>
+                    </div>
+                    <I.Plus width={16} height={16} style={{ marginLeft: 'auto', color: 'var(--text-faint)' }} />
+                  </div>
+                ))}
+              </aside>
+            )}
+          </div>
+        ) : (
+          <div className="cal-month card">
+            {RU_DAYS.slice(1).concat(RU_DAYS[0]).map((d) => <div className="month-dow" key={d}>{d}</div>)}
+            {rangeDays.map((d) => {
               const key = dayKey(d);
-              const list = byDay[key] || [];
+              const list = (byDay[key] || []).sort((a, b) => a.starts_at < b.starts_at ? -1 : 1);
+              const otherMonth = d.getMonth() !== anchor.getMonth();
               return (
-                <div className={`cal-col ${dragOverKey === key ? 'drag-over' : ''}`} key={key}
-                  onDragOver={isManager ? (e) => { e.preventDefault(); setDragOverKey(key); } : undefined}
-                  onDragLeave={isManager ? () => setDragOverKey((k) => (k === key ? null : k)) : undefined}
-                  onDrop={isManager ? (e) => onDropDay(d, e) : undefined}>
-                  <div className={`cal-colhead ${key === todayKey ? 'today' : ''}`}>
-                    <small>{RU_DAYS[d.getDay()]}</small><b>{d.getDate()}</b>
-                  </div>
-                  <div className="cal-body">
-                    {list.map((s) => {
-                      const st = statusMeta(s.status);
-                      return (
-                        <div key={s.id} className={`shift-chip ${st.cls}`} title={s.title}
-                          draggable={isManager}
-                          onDragStart={(e) => e.dataTransfer.setData('application/json',
-                            JSON.stringify({ kind: 'shift', id: s.id, startsAt: s.starts_at, endsAt: s.ends_at }))}>
-                          <b>{timeRange(s.starts_at, s.ends_at)}</b>
-                          <div className="who">{s.user_name || 'Открытая'}</div>
-                          <div className="role">{s.job_title || s.title}</div>
-                        </div>
-                      );
-                    })}
-                    {isManager && (
-                      <button className="qa" style={{ padding: '10px', borderStyle: 'dashed', color: 'var(--text-faint)' }} onClick={() => openAdd(d)}>
-                        <I.Plus width={16} height={16} /> Добавить
-                      </button>
-                    )}
-                  </div>
+                <div className={`month-cell ${otherMonth ? 'other' : ''} ${key === todayKey ? 'today' : ''}`} key={key}
+                  onClick={(e) => { if (isManager && e.target.classList.contains('month-cell')) setModal({ day: d }); }}>
+                  <div className="month-num">{d.getDate()}</div>
+                  {list.slice(0, 3).map((s) => <Chip key={s.id} s={s} compact />)}
+                  {list.length > 3 && <div className="month-more">+{list.length - 3}</div>}
                 </div>
               );
             })}
           </div>
-
-          {isManager && (
-            <aside className="roster card card-pad">
-              <h3 style={{ margin: '0 0 4px' }}>Свободные</h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: '0 0 14px' }}>Перетащите на день для назначения</p>
-              {staff.filter((s) => s.status === 'active').map((s) => (
-                <div key={s.id} className="roster-item" draggable
-                  onDragStart={(e) => e.dataTransfer.setData('application/json',
-                    JSON.stringify({ kind: 'staff', id: s.id }))}>
-                  <div className="avatar">{initials(s.name)}</div>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{s.name}</div>
-                    <div style={{ color: 'var(--text-faint)', fontSize: 12 }}>{s.jobTitle || s.role}</div>
-                  </div>
-                  <I.Plus width={16} height={16} style={{ marginLeft: 'auto', color: 'var(--text-faint)' }} />
-                </div>
-              ))}
-            </aside>
-          )}
-          </div>
         )}
       </div>
 
-      {showAdd && <AddShiftModal day={addDay || new Date()} staff={staff} onClose={closeAdd} onSaved={() => { closeAdd(); load(); }} />}
+      {modal && (
+        <ShiftModal
+          shift={modal.shift}
+          day={modal.day || new Date()}
+          staff={staff}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); load(); }}
+        />
+      )}
     </Layout>
   );
 }
 
-function toLocalInput(date, hour) {
-  const d = new Date(date); d.setHours(hour, 0, 0, 0);
+function toLocalInput(iso) {
+  const d = new Date(iso);
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+function dayAt(date, hour) { const d = new Date(date); d.setHours(hour, 0, 0, 0); return d; }
 
-function AddShiftModal({ day, staff, onClose, onSaved }) {
+function ShiftModal({ shift, day, staff, onClose, onSaved }) {
+  const editing = !!shift;
   const [form, setForm] = useState({
-    title: 'Смена', userId: '', location: '',
-    startsAt: toLocalInput(day, 9), endsAt: toLocalInput(day, 17), notes: ''
+    title: shift?.title || 'Смена',
+    userId: shift?.user_id ? String(shift.user_id) : '',
+    location: shift?.location || '',
+    startsAt: toLocalInput(shift?.starts_at || dayAt(day, 9)),
+    endsAt: toLocalInput(shift?.ends_at || dayAt(day, 17)),
   });
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState('');
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   async function save() {
-    setError(''); setBusy(true);
+    setError(''); setBusy('save');
+    const body = {
+      title: form.title,
+      userId: form.userId ? Number(form.userId) : null,
+      location: form.location,
+      startsAt: new Date(form.startsAt).toISOString(),
+      endsAt: new Date(form.endsAt).toISOString(),
+    };
     try {
-      await api.post('/shifts', {
-        ...form,
-        userId: form.userId ? Number(form.userId) : null,
-        startsAt: new Date(form.startsAt).toISOString(),
-        endsAt: new Date(form.endsAt).toISOString()
-      });
+      if (editing) await api.patch(`/shifts/${shift.id}`, body);
+      else await api.post('/shifts', body);
       onSaved();
-    } catch (e) { setError(e.message); } finally { setBusy(false); }
+    } catch (e) { setError(e.message); setBusy(''); }
+  }
+  async function remove() {
+    if (!confirm('Удалить смену?')) return;
+    setBusy('del');
+    try { await api.del(`/shifts/${shift.id}`); onSaved(); }
+    catch (e) { setError(e.message); setBusy(''); }
   }
 
   return (
-    <Modal title="Новая смена" onClose={onClose}
+    <Modal title={editing ? 'Смена' : 'Новая смена'} onClose={onClose}
       footer={<>
+        {editing && <button className="btn" style={{ color: 'var(--red-fg)', marginRight: 'auto' }} onClick={remove} disabled={!!busy}>Удалить</button>}
         <button className="btn" onClick={onClose}>Отмена</button>
-        <button className="btn primary" onClick={save} disabled={busy || !form.title}>{busy ? 'Сохранение…' : 'Создать'}</button>
+        <button className="btn primary" onClick={save} disabled={!!busy || !form.title}>{busy === 'save' ? 'Сохранение…' : editing ? 'Сохранить' : 'Создать'}</button>
       </>}>
       {error && <div className="auth-error">{error}</div>}
       <div className="field"><label>Название</label><input value={form.title} onChange={set('title')} placeholder="Утренняя смена" /></div>
