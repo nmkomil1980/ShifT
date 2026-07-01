@@ -75,6 +75,12 @@ await q.exec(`
     used_at TEXT, created_at ${TS}
   );
   CREATE INDEX IF NOT EXISTS email_tokens_hash_idx ON email_tokens(token_hash);
+  CREATE TABLE IF NOT EXISTS invoices (
+    id ${PK}, organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    plan TEXT NOT NULL, amount_cents INTEGER NOT NULL, currency TEXT NOT NULL DEFAULT 'USD',
+    created_at ${TS}
+  );
+  CREATE INDEX IF NOT EXISTS invoices_org_idx ON invoices(organization_id, id);
   CREATE INDEX IF NOT EXISTS push_subs_user_idx ON push_subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS shifts_org_start_idx ON shifts(organization_id, starts_at);
   CREATE INDEX IF NOT EXISTS requests_org_status_idx ON requests(organization_id, status);

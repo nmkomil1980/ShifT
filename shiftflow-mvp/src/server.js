@@ -66,6 +66,21 @@ async function createSession(userId) {
 }
 
 const manager = user => ['owner','manager'].includes(user.role);
+
+// Subscription plans (mock billing — no real payment processor wired in; the
+// subscribe endpoint records an invoice and flips the org's plan so the flow is
+// functional and Stripe/Paddle can be slotted in later).
+const PLANS = {
+  monthly:  { id:'monthly',  title:'Monthly',  price:2900,  period:'/мес',   billed:'Ежемесячно',      save:0,  months:1,  features:['Без лимита сотрудников','Стандартная поддержка','Базовая аналитика'] },
+  sixmonth: { id:'sixmonth', title:'6 Months', price:14900, period:'/6 мес', billed:'Раз в 6 месяцев', save:15, months:6,  highlight:true, features:['Без лимита сотрудников','Приоритетная поддержка','Расширенная аналитика','Экспорт данных'] },
+  yearly:   { id:'yearly',   title:'Yearly',   price:24900, period:'/год',   billed:'Раз в год',       save:30, months:12, features:['Всё из 6 Months','Персональный менеджер','API-доступ'] },
+};
+async function loadOrg(orgId) {
+  const o = await q.get('SELECT settings,created_at FROM organizations WHERE id=?', [orgId]);
+  let settings = {}; try { settings = JSON.parse(o.settings || '{}'); } catch { settings = {}; }
+  return { settings, createdAt: o.created_at };
+}
+const saveOrgSettings = (orgId, settings) => q.run('UPDATE organizations SET settings=? WHERE id=?', [JSON.stringify(settings), orgId]);
 const idFrom = (pathname, base) => Number(pathname.slice(base.length).split('/')[0]);
 const required = (value,name,max=200) => {
   if(typeof value!=='string'||!value.trim()) throw new Error(`${name}: обязательное поле`);
@@ -177,6 +192,43 @@ async function api(req,res,url) {
     const name=typeof d.name==='string'&&d.name.trim()?d.name.trim().slice(0,120):org.name;
     await q.run('UPDATE organizations SET name=?,settings=? WHERE id=?', [name,JSON.stringify(merged),user.organization_id]);
     await audit(user,'update','organization',user.organization_id);
+    return json(res,200,{ok:true});
+  }
+  if(pathname==='/api/billing'&&req.method==='GET') {
+    const {settings,createdAt}=await loadOrg(user.organization_id);
+    const b=settings.billing||{};
+    const created=new Date(String(createdAt).replace(' ','T')+'Z');
+    const trialEndsAt=b.trialEndsAt||new Date(created.getTime()+14*86400000).toISOString();
+    const activePlan=b.plan&&PLANS[b.plan]?b.plan:null;
+    const periodEnd=activePlan?b.currentPeriodEnd:trialEndsAt;
+    const daysLeft=Math.max(0,Math.ceil((new Date(periodEnd).getTime()-Date.now())/86400000));
+    const invoices=await q.all(`SELECT id,plan,amount_cents "amountCents",currency,created_at "createdAt" FROM invoices WHERE organization_id=? ORDER BY id DESC`, [user.organization_id]);
+    return json(res,200,{
+      billing:{plan:activePlan,status:activePlan?'active':'trialing',trialEndsAt,currentPeriodEnd:b.currentPeriodEnd||null,daysLeft,paymentMethod:b.paymentMethod||null},
+      plans:Object.values(PLANS),
+      invoices:invoices.map(i=>({...i,amountCents:Number(i.amountCents)}))
+    });
+  }
+  if(pathname==='/api/billing/subscribe'&&req.method==='POST') {
+    if(!manager(user)) return fail(res,403,'Недостаточно прав');
+    const d=await body(req); const plan=PLANS[d.plan];
+    if(!plan) return fail(res,422,'Неизвестный тариф');
+    const {settings}=await loadOrg(user.organization_id);
+    const end=new Date(Date.now()+plan.months*30*86400000).toISOString();
+    settings.billing={...(settings.billing||{}),plan:plan.id,status:'active',startedAt:nowIso(),currentPeriodEnd:end};
+    await saveOrgSettings(user.organization_id,settings);
+    await q.run('INSERT INTO invoices(organization_id,plan,amount_cents,currency) VALUES(?,?,?,?)', [user.organization_id,plan.id,plan.price,'USD']);
+    await audit(user,'subscribe','billing',user.organization_id,{plan:plan.id});
+    return json(res,200,{ok:true,plan:plan.id});
+  }
+  if(pathname==='/api/billing/payment-method'&&req.method==='POST') {
+    if(!manager(user)) return fail(res,403,'Недостаточно прав');
+    const d=await body(req);
+    const last4=String(d.last4||'').replace(/\D/g,'').slice(-4);
+    if(last4.length!==4) return fail(res,422,'Некорректный номер карты');
+    const {settings}=await loadOrg(user.organization_id);
+    settings.billing={...(settings.billing||{}),paymentMethod:{brand:String(d.brand||'CARD').slice(0,20),last4,exp:String(d.exp||'').slice(0,7)}};
+    await saveOrgSettings(user.organization_id,settings);
     return json(res,200,{ok:true});
   }
   if(pathname==='/api/notifications'&&req.method==='GET') {

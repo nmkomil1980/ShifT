@@ -361,6 +361,28 @@ test('exports schedule as CSV and PDF, and staff as CSV', async () => {
   assert.equal(bytes.subarray(0, 4).toString('latin1'), '%PDF'); // valid PDF magic
 });
 
+test('billing: trial, subscribe and invoice history', async () => {
+  const owner = await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }));
+  const auth = owner.token;
+
+  const before = await json(await fetch(`${base}/api/billing`, { headers: { Authorization: `Bearer ${auth}` } }));
+  assert.equal(before.billing.plan, null);
+  assert.equal(before.billing.status, 'trialing');
+  assert.ok(before.plans.length === 3);
+  assert.equal(before.invoices.length, 0);
+
+  assert.equal((await post('/api/billing/subscribe', { plan: 'nope' }, auth)).status, 422);
+  assert.equal((await post('/api/billing/subscribe', { plan: 'sixmonth' }, auth)).status, 200);
+  await post('/api/billing/payment-method', { brand: 'VISA', last4: '4242', exp: '12/25' }, auth);
+
+  const after = await json(await fetch(`${base}/api/billing`, { headers: { Authorization: `Bearer ${auth}` } }));
+  assert.equal(after.billing.plan, 'sixmonth');
+  assert.equal(after.billing.status, 'active');
+  assert.equal(after.billing.paymentMethod.last4, '4242');
+  assert.equal(after.invoices.length, 1);
+  assert.equal(after.invoices[0].amountCents, 14900);
+});
+
 test('CORS preflight is answered for allowed origin', async () => {
   const res = await fetch(`${base}/api/me`, {
     method: 'OPTIONS',

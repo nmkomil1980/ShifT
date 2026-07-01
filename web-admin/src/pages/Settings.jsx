@@ -21,9 +21,12 @@ export default function Settings() {
         <div className="page-head"><h2>Настройки</h2><p>Управление организацией и личным профилем.</p></div>
         <div className="tabs">
           {isManager && <button className={tab === 'company' ? 'active' : ''} onClick={() => setTab('company')}>Компания</button>}
+          {isManager && <button className={tab === 'billing' ? 'active' : ''} onClick={() => setTab('billing')}>Подписка</button>}
           <button className={tab === 'profile' ? 'active' : ''} onClick={() => setTab('profile')}>Мой профиль</button>
         </div>
-        {tab === 'company' && isManager ? <CompanyTab /> : <ProfileTab />}
+        {tab === 'company' && isManager ? <CompanyTab />
+          : tab === 'billing' && isManager ? <BillingTab />
+          : <ProfileTab />}
       </div>
     </Layout>
   );
@@ -125,6 +128,125 @@ function CompanyTab() {
           {error && <div className="auth-error">{error}</div>}
           {saved && <div className="auth-error" style={{ background: 'var(--green-bg)', color: 'var(--green-fg)' }}>Сохранено</div>}
           <button className="btn primary" style={{ width: '100%' }} onClick={save} disabled={busy}>{busy ? 'Сохранение…' : 'Сохранить изменения'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Check({ light }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={light ? '#c7f9e0' : 'var(--indigo-500)'} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" /><path d="M8 12l3 3 5-6" />
+    </svg>
+  );
+}
+
+function BillingTab() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [card, setCard] = useState({ show: false, number: '', exp: '' });
+
+  const load = () => api.get('/billing').then(setData).catch(() => setData(null));
+  useEffect(() => { load(); }, []);
+
+  if (!data) return <div className="card card-pad"><div className="spinner" /></div>;
+  const { billing, plans, invoices } = data;
+  const money = (c) => `$${c % 100 === 0 ? c / 100 : (c / 100).toFixed(2)}`;
+
+  async function subscribe(planId) {
+    setBusy(planId);
+    try { await api.post('/billing/subscribe', { plan: planId }); await load(); }
+    catch (e) { alert(e.message); } finally { setBusy(''); }
+  }
+  async function saveCard() {
+    setBusy('card');
+    try {
+      await api.post('/billing/payment-method', { brand: 'CARD', last4: card.number.replace(/\D/g, '').slice(-4), exp: card.exp });
+      setCard({ show: false, number: '', exp: '' });
+      await load();
+    } catch (e) { alert(e.message); } finally { setBusy(''); }
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 18, flexWrap: 'wrap' }}>
+        <div>
+          <h3 style={{ margin: '0 0 4px' }}>Подписка и оплата</h3>
+          <p style={{ color: 'var(--text-muted)', margin: 0 }}>Управление тарифом, картой и историей платежей.</p>
+        </div>
+        <div className="current-plan">
+          {billing.plan
+            ? <>Текущий тариф: <b>{plans.find((p) => p.id === billing.plan)?.title}</b> · осталось {billing.daysLeft} дн.</>
+            : <>Пробный период · осталось {billing.daysLeft} дн.</>}
+        </div>
+      </div>
+
+      {!billing.plan && billing.daysLeft <= 7 && (
+        <div className="trial-warn">
+          <b>Требуется действие: пробный период заканчивается.</b> Через {billing.daysLeft} дн. доступ к планированию и аналитике будет ограничен. Выберите тариф ниже.
+        </div>
+      )}
+
+      <div className="plan-grid">
+        {plans.map((p) => {
+          const active = billing.plan === p.id;
+          return (
+            <div key={p.id} className={`plan ${p.highlight ? 'hl' : ''}`}>
+              {p.save > 0 && <span className="save-badge">SAVE {p.save}%</span>}
+              <h4>{p.title}</h4>
+              <div className="plan-sub">{p.billed}</div>
+              <div className="price">{money(p.price)}<small>{p.period}</small></div>
+              <div className="billed">{p.billed}</div>
+              <div>
+                {p.features.map((f, i) => (
+                  <div className="feat" key={i}><Check light={p.highlight} /> {f}</div>
+                ))}
+              </div>
+              <div className="plan-cta">
+                <button className="btn primary" disabled={active || busy === p.id} onClick={() => subscribe(p.id)}>
+                  {active ? 'Текущий тариф' : busy === p.id ? 'Оформление…' : 'Подписаться'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="grid cols-2" style={{ marginTop: 18 }}>
+        <div className="card card-pad">
+          <div className="section-head"><h3>Способ оплаты</h3>
+            {!card.show && <button className="link" style={{ background: 'none', border: 'none', cursor: 'pointer' }} onClick={() => setCard({ ...card, show: true })}>Добавить</button>}
+          </div>
+          {card.show ? (
+            <div className="grid cols-2">
+              <div className="field" style={{ gridColumn: '1 / -1' }}><label>Номер карты</label><input value={card.number} onChange={(e) => setCard({ ...card, number: e.target.value })} placeholder="4242 4242 4242 4242" /></div>
+              <div className="field"><label>Срок</label><input value={card.exp} onChange={(e) => setCard({ ...card, exp: e.target.value })} placeholder="12/25" /></div>
+              <div className="field" style={{ alignSelf: 'end' }}><button className="btn primary" onClick={saveCard} disabled={busy === 'card'}>Сохранить</button></div>
+            </div>
+          ) : billing.paymentMethod ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span className="badge gray">{billing.paymentMethod.brand}</span>
+              <span>Карта •••• {billing.paymentMethod.last4}</span>
+              <span style={{ color: 'var(--text-faint)' }}>{billing.paymentMethod.exp}</span>
+            </div>
+          ) : <div className="empty" style={{ padding: 12, textAlign: 'left' }}>Карта не добавлена</div>}
+        </div>
+
+        <div className="card card-pad">
+          <div className="section-head"><h3>История платежей</h3></div>
+          {invoices.length === 0 ? (
+            <div className="empty">Платежей пока нет. Счета появятся после оформления подписки.</div>
+          ) : (
+            <table className="data">
+              <thead><tr><th>Дата</th><th>Тариф</th><th>Сумма</th></tr></thead>
+              <tbody>
+                {invoices.map((inv) => (
+                  <tr key={inv.id}><td>{inv.createdAt.slice(0, 10)}</td><td>{plans.find((p) => p.id === inv.plan)?.title || inv.plan}</td><td>{money(inv.amountCents)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </div>
