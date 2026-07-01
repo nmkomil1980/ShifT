@@ -19,7 +19,7 @@ export default function Onboarding() {
   const [account, setAccount] = useState({ name: '', email: '', password: '', company: '' });
   const [company, setCompany] = useState({
     industry: '', language: 'ru', operatingDays: [1, 2, 3, 4, 5],
-    defaultShiftHours: 8, overtimeThreshold: 40
+    openTime: '09:00', closeTime: '18:00', overtimeThreshold: 40
   });
   const [roles, setRoles] = useState(['Менеджер', 'Официант', 'Повар']);
   const [roleInput, setRoleInput] = useState('');
@@ -135,10 +135,15 @@ export default function Onboarding() {
                 ))}
               </div>
             </div>
-            <div className="grid cols-2">
-              <div className="field"><label>Смена по умолчанию (ч)</label><input type="number" min="1" max="24" value={company.defaultShiftHours} onChange={setC('defaultShiftHours')} /></div>
-              <div className="field"><label>Порог переработки (ч/нед)</label><input type="number" min="1" value={company.overtimeThreshold} onChange={setC('overtimeThreshold')} /></div>
+            <div className="field">
+              <label>Часы работы заведения</label>
+              <div className="hours-row">
+                <input type="time" value={company.openTime} onChange={setC('openTime')} />
+                <span className="hours-sep">—</span>
+                <input type="time" value={company.closeTime} onChange={setC('closeTime')} />
+              </div>
             </div>
+            <div className="field"><label>Порог переработки (ч/нед)</label><input type="number" min="1" value={company.overtimeThreshold} onChange={setC('overtimeThreshold')} /></div>
             <div className="btn-group" style={{ justifyContent: 'space-between' }}>
               <button className="btn" onClick={() => setStep(0)}>Назад</button>
               <button className="btn primary" disabled={busy} onClick={saveCompany}>{busy ? 'Сохранение…' : 'Далее'}</button>
@@ -175,10 +180,10 @@ export default function Onboarding() {
             <h2>Пригласите команду</h2>
             <p className="sub">Добавьте сотрудников — они появятся в системе. Можно пропустить.</p>
             {invites.map((inv, i) => (
-              <div className="grid" key={i} style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
-                <input placeholder="Имя" value={inv.name} onChange={(e) => setInvites(invites.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
-                <input placeholder="Email" value={inv.email} onChange={(e) => setInvites(invites.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
-                <input placeholder="Должность" value={inv.jobTitle} onChange={(e) => setInvites(invites.map((x, j) => j === i ? { ...x, jobTitle: e.target.value } : x))} />
+              <div className="invite-row" key={i}>
+                <input className="invite-input" placeholder="Имя" value={inv.name} onChange={(e) => setInvites(invites.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+                <input className="invite-input" placeholder="Email" value={inv.email} onChange={(e) => setInvites(invites.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                <input className="invite-input" placeholder="Должность" value={inv.jobTitle} onChange={(e) => setInvites(invites.map((x, j) => j === i ? { ...x, jobTitle: e.target.value } : x))} />
               </div>
             ))}
             <button className="link" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }} onClick={() => setInvites([...invites, { name: '', email: '', jobTitle: '' }])}>+ Добавить ещё</button>

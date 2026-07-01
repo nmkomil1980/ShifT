@@ -216,10 +216,17 @@ export default function Calendar() {
   );
 }
 
-function toLocalInput(iso) {
-  const d = new Date(iso);
+function splitLocalInput(startIso, endIso) {
   const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const parts = (iso) => {
+    const d = new Date(iso);
+    return {
+      date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+      time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    };
+  };
+  const s = parts(startIso), e = parts(endIso);
+  return { startDate: s.date, startTime: s.time, endDate: e.date, endTime: e.time };
 }
 function dayAt(date, hour) { const d = new Date(date); d.setHours(hour, 0, 0, 0); return d; }
 
@@ -229,8 +236,7 @@ function ShiftModal({ shift, day, staff, onClose, onSaved }) {
     title: shift?.title || 'Смена',
     userId: shift?.user_id ? String(shift.user_id) : '',
     location: shift?.location || '',
-    startsAt: toLocalInput(shift?.starts_at || dayAt(day, 9)),
-    endsAt: toLocalInput(shift?.ends_at || dayAt(day, 17)),
+    ...splitLocalInput(shift?.starts_at || dayAt(day, 9), shift?.ends_at || dayAt(day, 17)),
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -242,8 +248,8 @@ function ShiftModal({ shift, day, staff, onClose, onSaved }) {
       title: form.title,
       userId: form.userId ? Number(form.userId) : null,
       location: form.location,
-      startsAt: new Date(form.startsAt).toISOString(),
-      endsAt: new Date(form.endsAt).toISOString(),
+      startsAt: new Date(`${form.startDate}T${form.startTime}`).toISOString(),
+      endsAt: new Date(`${form.endDate}T${form.endTime}`).toISOString(),
     };
     try {
       if (editing) await api.patch(`/shifts/${shift.id}`, body);
@@ -273,9 +279,11 @@ function ShiftModal({ shift, day, staff, onClose, onSaved }) {
           {staff.filter((s) => s.status === 'active').map((s) => <option key={s.id} value={s.id}>{s.name} · {s.jobTitle || s.role}</option>)}
         </select>
       </div>
-      <div className="grid cols-2">
-        <div className="field"><label>Начало</label><input type="datetime-local" value={form.startsAt} onChange={set('startsAt')} /></div>
-        <div className="field"><label>Окончание</label><input type="datetime-local" value={form.endsAt} onChange={set('endsAt')} /></div>
+      <div className="shift-time-grid">
+        <div className="field"><label>Дата начала</label><input type="date" value={form.startDate} onChange={set('startDate')} /></div>
+        <div className="field"><label>Время начала</label><input type="time" value={form.startTime} onChange={set('startTime')} /></div>
+        <div className="field"><label>Дата окончания</label><input type="date" value={form.endDate} onChange={set('endDate')} /></div>
+        <div className="field"><label>Время окончания</label><input type="time" value={form.endTime} onChange={set('endTime')} /></div>
       </div>
       <div className="field"><label>Локация</label><input value={form.location} onChange={set('location')} placeholder="Главный зал" /></div>
     </Modal>
