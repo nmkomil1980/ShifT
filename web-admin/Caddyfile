@@ -1,0 +1,21 @@
+# Edge server for the ShiftFlow web console.
+#
+# SITE_ADDRESS controls TLS:
+#   :80              -> plain HTTP (default; good for local `docker compose up`)
+#   localhost        -> HTTPS on :443 via Caddy's internal CA (self-signed)
+#   shiftflow.app    -> automatic HTTPS via Let's Encrypt (needs public DNS + 80/443)
+{$SITE_ADDRESS::80} {
+	encode gzip
+
+	# API calls go to the backend container.
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	# Everything else is the single-page app.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
