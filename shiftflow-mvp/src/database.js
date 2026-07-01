@@ -68,6 +68,13 @@ await q.exec(`
     endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
     created_at ${TS}
   );
+  CREATE TABLE IF NOT EXISTS email_tokens (
+    id ${PK}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL CHECK(purpose IN ('invite','reset','verify')),
+    token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL,
+    used_at TEXT, created_at ${TS}
+  );
+  CREATE INDEX IF NOT EXISTS email_tokens_hash_idx ON email_tokens(token_hash);
   CREATE INDEX IF NOT EXISTS push_subs_user_idx ON push_subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS shifts_org_start_idx ON shifts(organization_id, starts_at);
   CREATE INDEX IF NOT EXISTS requests_org_status_idx ON requests(organization_id, status);
@@ -92,6 +99,7 @@ async function ensureColumn(table, column, definition) {
   if (!exists) await q.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 await ensureColumn('organizations', 'settings', `TEXT NOT NULL DEFAULT '{}'`);
+await ensureColumn('users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0');
 
 /**
  * Ensure the org has a "General Team Chat" group and that `userId` belongs to

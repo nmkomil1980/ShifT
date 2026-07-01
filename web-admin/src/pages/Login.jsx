@@ -45,7 +45,7 @@ export default function Login() {
         </div>
         <div className="field">
           <label htmlFor="password">
-            Пароль <a className="link" href="#" onClick={(e) => e.preventDefault()}>Забыли пароль?</a>
+            Пароль <a className="link" href="/forgot-password" onClick={(e) => { e.preventDefault(); navigate('/forgot-password'); }}>Забыли пароль?</a>
           </label>
           <input id="password" type="password" value={password} autoComplete="current-password"
             onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required />

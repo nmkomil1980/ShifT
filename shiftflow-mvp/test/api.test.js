@@ -28,7 +28,7 @@ async function waitForHealth(retries = 40) {
 test.before(async () => {
   server = spawn(process.execPath, ['src/server.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), DATABASE_PATH: dbPath, CORS_ORIGINS: 'http://localhost:5173' },
+    env: { ...process.env, PORT: String(port), DATABASE_PATH: dbPath, CORS_ORIGINS: 'http://localhost:5173', MAIL_DEV_RETURN_TOKEN: '1', APP_URL: 'http://localhost:5173' },
     stdio: 'ignore'
   });
   await waitForHealth();
@@ -272,6 +272,71 @@ test('web push: exposes a VAPID key and stores subscriptions', async () => {
     body: JSON.stringify({ subscription: {} })
   });
   assert.equal(bad.status, 422);
+});
+
+const json = (r) => r.json();
+const post = (path, body, auth) => fetch(`${base}${path}`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: `Bearer ${auth}` } : {}) },
+  body: JSON.stringify(body)
+});
+
+test('staff invitation flow: invite -> accept -> login', async () => {
+  const owner = await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }));
+
+  // invite (no password supplied) returns a dev token standing in for the email link
+  const created = await json(await post('/api/staff', { name: 'Гость Приглашённый', email: 'invitee@shiftflow.local' }, owner.token));
+  assert.equal(created.invited, true);
+  assert.ok(created.devToken);
+
+  // cannot log in before accepting (random password)
+  assert.equal((await post('/api/auth/login', { email: 'invitee@shiftflow.local', password: 'Demo123!' })).status, 401);
+
+  const accepted = await post('/api/auth/accept-invite', { token: created.devToken, password: 'Invitee123!' });
+  assert.equal(accepted.status, 200);
+  const acceptedBody = await accepted.json();
+  assert.ok(acceptedBody.token);
+  assert.equal(acceptedBody.user.emailVerified, true);
+
+  // now the credentials work
+  assert.equal((await post('/api/auth/login', { email: 'invitee@shiftflow.local', password: 'Invitee123!' })).status, 200);
+
+  // an invite token is single-use
+  assert.equal((await post('/api/auth/accept-invite', { token: created.devToken, password: 'Whatever123!' })).status, 400);
+});
+
+test('password reset flow', async () => {
+  // forgot-password never reveals existence, always 200
+  const unknown = await post('/api/auth/forgot-password', { email: 'nobody@nowhere.test' });
+  assert.equal(unknown.status, 200);
+
+  const forgot = await json(await post('/api/auth/forgot-password', { email: 'invitee@shiftflow.local' }));
+  assert.ok(forgot.devToken);
+
+  const reset = await post('/api/auth/reset-password', { token: forgot.devToken, password: 'BrandNew123!' });
+  assert.equal(reset.status, 200);
+
+  assert.equal((await post('/api/auth/login', { email: 'invitee@shiftflow.local', password: 'BrandNew123!' })).status, 200);
+  // old invite-set password no longer works
+  assert.equal((await post('/api/auth/login', { email: 'invitee@shiftflow.local', password: 'Invitee123!' })).status, 401);
+  // reset token cannot be replayed
+  assert.equal((await post('/api/auth/reset-password', { token: forgot.devToken, password: 'Another123!' })).status, 400);
+});
+
+test('email verification flow', async () => {
+  const reg = await json(await post('/api/auth/register', {
+    name: 'Верифи Тест', company: 'Verify Co', email: 'verify@shiftflow.local', password: 'Verify123!'
+  }));
+  assert.ok(reg.devToken);
+  assert.equal(reg.user.emailVerified, false);
+
+  assert.equal((await post('/api/auth/verify-email', { token: reg.devToken })).status, 200);
+
+  const me = await json(await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${reg.token}` } }));
+  assert.equal(me.user.emailVerified, true);
+
+  // bad token is rejected
+  assert.equal((await post('/api/auth/verify-email', { token: 'garbage' })).status, 400);
 });
 
 test('CORS preflight is answered for allowed origin', async () => {

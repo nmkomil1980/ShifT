@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { q, audit, ensureGeneralChat } from './database.js';
 import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendToUsers } from './push.js';
 import { attachRealtime, broadcastToUsers } from './realtime.js';
+import { sendMail, templates, appUrl } from './mailer.js';
+import { createEmailToken, consumeEmailToken } from './emailtokens.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -18,8 +20,20 @@ const json = (res, status, data, headers = {}) => {
   res.end(JSON.stringify(data));
 };
 const fail = (res, status, message) => json(res,status,{error:message});
-const cleanUser = u => u && ({id:u.id,name:u.name,email:u.email,role:u.role,jobTitle:u.job_title,phone:u.phone,status:u.status,organizationId:u.organization_id,organizationName:u.organization_name});
+const cleanUser = u => u && ({id:u.id,name:u.name,email:u.email,role:u.role,jobTitle:u.job_title,phone:u.phone,status:u.status,emailVerified:!!u.email_verified,organizationId:u.organization_id,organizationName:u.organization_name});
 const nowIso = () => new Date().toISOString();
+
+// Email action links. In non-production a devToken can be surfaced in responses
+// (guarded by MAIL_DEV_RETURN_TOKEN) so automated tests can follow the flow.
+const emailPaths = { invite:'/accept-invite', reset:'/reset-password', verify:'/verify-email' };
+const devTokenField = raw => process.env.MAIL_DEV_RETURN_TOKEN==='1' ? {devToken:raw} : {};
+async function issueEmail(userId, to, purpose, vars={}) {
+  const raw = await createEmailToken(userId, purpose);
+  const link = `${appUrl}${emailPaths[purpose]}?token=${raw}`;
+  const tpl = templates[purpose]({ link, ...vars });
+  sendMail({ to, ...tpl }).catch(err => console.error('mail error:', err.message));
+  return raw;
+}
 // Matches the DB timestamp format ('YYYY-MM-DD HH:MM:SS', UTC) used by
 // created_at so that last_read_at string comparisons order correctly.
 const nowStamp = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -77,7 +91,8 @@ async function api(req,res,url) {
     } catch(e) { if(e.code==='UNIQUE_VIOLATION') return fail(res,409,'Этот email уже используется'); throw e; }
     const token=await createSession(uid);
     const full=await q.get(`SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.id=?`,[uid]);
-    return json(res,201,{token,user:cleanUser(full)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
+    const verifyRaw=await issueEmail(uid,email,'verify');
+    return json(res,201,{token,user:cleanUser(full),...devTokenField(verifyRaw)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
   }
   if(req.method==='POST'&&pathname==='/api/auth/login') {
     const data=await body(req);
@@ -90,6 +105,40 @@ async function api(req,res,url) {
     const token=bearerToken(req)||parseCookies(req.headers.cookie).sf_session;
     if(token) await q.run('DELETE FROM sessions WHERE token_hash=?', [tokenHash(token)]);
     return json(res,200,{ok:true},{'Set-Cookie':clearSessionCookie()});
+  }
+  if(req.method==='POST'&&pathname==='/api/auth/forgot-password') {
+    const d=await body(req); const email=String(d.email||'').toLowerCase().trim();
+    const found=email?await q.get(`SELECT id FROM users WHERE email=? AND status='active'`,[email]):null;
+    let raw=null;
+    if(found) raw=await issueEmail(found.id,email,'reset');
+    // Always 200 so the endpoint does not reveal whether the email exists.
+    return json(res,200,{ok:true,...(found?devTokenField(raw):{})});
+  }
+  if(req.method==='POST'&&pathname==='/api/auth/reset-password') {
+    const d=await body(req);
+    if(String(d.password||'').length<8) return fail(res,422,'Пароль должен быть не короче 8 символов');
+    const uid=await consumeEmailToken(String(d.token||''),'reset');
+    if(!uid) return fail(res,400,'Ссылка недействительна или устарела');
+    await q.run('UPDATE users SET password_hash=?,email_verified=1 WHERE id=?', [passwordHash(d.password),uid]);
+    await q.run('DELETE FROM sessions WHERE user_id=?', [uid]); // log out other sessions
+    return json(res,200,{ok:true});
+  }
+  if(req.method==='POST'&&pathname==='/api/auth/accept-invite') {
+    const d=await body(req);
+    if(String(d.password||'').length<8) return fail(res,422,'Пароль должен быть не короче 8 символов');
+    const uid=await consumeEmailToken(String(d.token||''),'invite');
+    if(!uid) return fail(res,400,'Приглашение недействительно или устарело');
+    await q.run(`UPDATE users SET password_hash=?,email_verified=1,status='active' WHERE id=?`, [passwordHash(d.password),uid]);
+    const token=await createSession(uid);
+    const full=await q.get(`SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.id=?`,[uid]);
+    return json(res,200,{token,user:cleanUser(full)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
+  }
+  if(req.method==='POST'&&pathname==='/api/auth/verify-email') {
+    const d=await body(req);
+    const uid=await consumeEmailToken(String(d.token||''),'verify');
+    if(!uid) return fail(res,400,'Ссылка недействительна или устарела');
+    await q.run('UPDATE users SET email_verified=1 WHERE id=?', [uid]);
+    return json(res,200,{ok:true});
   }
   const user=await currentUser(req);
   if(!user) return fail(res,401,'Требуется авторизация');
@@ -167,11 +216,19 @@ async function api(req,res,url) {
   if(pathname==='/api/staff'&&req.method==='POST') {
     if(!manager(user)) return fail(res,403,'Недостаточно прав');
     const d=await body(req), email=required(d.email,'Email').toLowerCase();
+    // If a password is supplied, use it directly; otherwise create an inactive
+    // account with a random password and email an invite to set one.
+    const hasPassword=typeof d.password==='string'&&d.password.length>=8;
+    const invite=!hasPassword;
+    const passwordHashValue=passwordHash(hasPassword?d.password:randomToken());
     try {
       const result=await q.insert(`INSERT INTO users(organization_id,name,email,password_hash,role,job_title,phone) VALUES(?,?,?,?,?,?,?)`,
-        [user.organization_id,required(d.name,'Имя',100),email,passwordHash(d.password||'Welcome123!'),['manager','employee'].includes(d.role)?d.role:'employee',String(d.jobTitle||'').slice(0,100),String(d.phone||'').slice(0,40)]);
+        [user.organization_id,required(d.name,'Имя',100),email,passwordHashValue,['manager','employee'].includes(d.role)?d.role:'employee',String(d.jobTitle||'').slice(0,100),String(d.phone||'').slice(0,40)]);
       await ensureGeneralChat(user.organization_id,result.id);
-      await audit(user,'create','user',result.id,{email}); return json(res,201,{id:result.id});
+      await audit(user,'create','user',result.id,{email});
+      let raw=null;
+      if(invite) raw=await issueEmail(result.id,email,'invite',{orgName:user.organization_name});
+      return json(res,201,{id:result.id,invited:invite,...(invite?devTokenField(raw):{})});
     } catch(e) { if(e.code==='UNIQUE_VIOLATION') return fail(res,409,'Сотрудник с таким email уже существует'); throw e; }
   }
   if(pathname.startsWith('/api/staff/')&&req.method==='PATCH') {
