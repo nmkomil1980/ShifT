@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, download } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { timeRange, dayKey, RU_DAYS, RU_MONTHS, statusMeta, initials } from '../lib/util.js';
 import Layout from '../components/Layout.jsx';
@@ -102,7 +102,17 @@ export default function Calendar() {
             <button className="btn" onClick={() => setWeekStart(startOfWeek(new Date()))}>Сегодня</button>
             <button className="icon-btn" onClick={() => shiftWeek(1)}><I.ChevronRight width={18} height={18} /></button>
           </div>
-          {isManager && <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={() => openAdd(new Date())}><I.Plus width={18} height={18} /> Новая смена</button>}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <button className="btn" onClick={() => {
+              const from = weekStart.toISOString(), to = days[6].toISOString();
+              download(`/export/shifts.csv?from=${from}&to=${to}`, 'shifts.csv').catch((e) => setDropError(e.message));
+            }}>Экспорт CSV</button>
+            <button className="btn" onClick={() => {
+              const from = weekStart.toISOString(), to = days[6].toISOString();
+              download(`/export/shifts.pdf?from=${from}&to=${to}`, 'schedule.pdf').catch((e) => setDropError(e.message));
+            }}>PDF</button>
+            {isManager && <button className="btn primary" onClick={() => openAdd(new Date())}><I.Plus width={18} height={18} /> Новая смена</button>}
+          </div>
         </div>
 
         {dropError && <div className="auth-error" style={{ marginBottom: 12 }}>{dropError}</div>}

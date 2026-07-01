@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, download } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { initials } from '../lib/util.js';
 import Layout from '../components/Layout.jsx';
@@ -50,6 +50,7 @@ export default function Staff() {
               <I.Search />
               <input placeholder="Поиск сотрудника…" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
+            <button className="btn" onClick={() => download('/export/staff.csv', 'staff.csv').catch((e) => alert(e.message))}>Экспорт CSV</button>
             {isManager && <button className="btn primary" onClick={() => setShowAdd(true)}><I.UserPlus width={18} height={18} /> Добавить</button>}
           </div>
         </div>

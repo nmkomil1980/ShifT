@@ -339,6 +339,28 @@ test('email verification flow', async () => {
   assert.equal((await post('/api/auth/verify-email', { token: 'garbage' })).status, 400);
 });
 
+test('exports schedule as CSV and PDF, and staff as CSV', async () => {
+  const owner = await json(await post('/api/auth/login', { email: 'demo@shiftflow.local', password: 'Demo123!' }));
+  const auth = { Authorization: `Bearer ${owner.token}` };
+
+  const csv = await fetch(`${base}/api/export/shifts.csv`, { headers: auth });
+  assert.equal(csv.status, 200);
+  assert.match(csv.headers.get('content-type'), /text\/csv/);
+  assert.match(csv.headers.get('content-disposition'), /shifts\.csv/);
+  const csvText = await csv.text();
+  assert.ok(csvText.includes('Сотрудник')); // header row present, UTF-8 intact
+
+  const staff = await fetch(`${base}/api/export/staff.csv`, { headers: auth });
+  assert.equal(staff.status, 200);
+  assert.ok((await staff.text()).includes('demo@shiftflow.local'));
+
+  const pdf = await fetch(`${base}/api/export/shifts.pdf`, { headers: auth });
+  assert.equal(pdf.status, 200);
+  assert.match(pdf.headers.get('content-type'), /application\/pdf/);
+  const bytes = Buffer.from(await pdf.arrayBuffer());
+  assert.equal(bytes.subarray(0, 4).toString('latin1'), '%PDF'); // valid PDF magic
+});
+
 test('CORS preflight is answered for allowed origin', async () => {
   const res = await fetch(`${base}/api/me`, {
     method: 'OPTIONS',

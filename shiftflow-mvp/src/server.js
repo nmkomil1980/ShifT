@@ -7,6 +7,7 @@ import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendT
 import { attachRealtime, broadcastToUsers } from './realtime.js';
 import { sendMail, templates, appUrl } from './mailer.js';
 import { createEmailToken, consumeEmailToken } from './emailtokens.js';
+import { shiftsCsv, staffCsv, shiftsPdf } from './export.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -377,6 +378,23 @@ async function api(req,res,url) {
     const rolesRaw=await q.all(`SELECT COALESCE(NULLIF(job_title,''),'Без должности') role,COUNT(*) count FROM users WHERE organization_id=? AND status='active' GROUP BY job_title ORDER BY count DESC`, [user.organization_id]);
     const roles=rolesRaw.map(r=>({role:r.role,count:Number(r.count)}));
     return json(res,200,{days,roles});
+  }
+  if(pathname.startsWith('/api/export/')&&req.method==='GET') {
+    const from=url.searchParams.get('from')||new Date(Date.now()-14*86400000).toISOString();
+    const to=url.searchParams.get('to')||new Date(Date.now()+31*86400000).toISOString();
+    const attach=(name,type)=>({'Content-Type':type,'Content-Disposition':`attachment; filename="${name}"`,'Cache-Control':'no-store'});
+    if(pathname==='/api/export/staff.csv') {
+      const staff=await q.all(`SELECT name,email,role,job_title "jobTitle",phone,status FROM users WHERE organization_id=? ORDER BY name`, [user.organization_id]);
+      res.writeHead(200,attach('staff.csv','text/csv; charset=utf-8')); return res.end(staffCsv(staff));
+    }
+    if(pathname==='/api/export/shifts.csv'||pathname==='/api/export/shifts.pdf') {
+      const shifts=await q.all(`SELECT s.*,u.name user_name,u.job_title FROM shifts s LEFT JOIN users u ON u.id=s.user_id
+        WHERE s.organization_id=? AND s.starts_at<? AND s.ends_at>? ORDER BY s.starts_at`, [user.organization_id,to,from]);
+      if(pathname.endsWith('.csv')) { res.writeHead(200,attach('shifts.csv','text/csv; charset=utf-8')); return res.end(shiftsCsv(shifts)); }
+      res.writeHead(200,attach('schedule.pdf','application/pdf'));
+      return shiftsPdf(res,{orgName:user.organization_name,from,to,shifts});
+    }
+    return fail(res,404,'Экспорт не найден');
   }
   return fail(res,404,'Метод API не найден');
 }
