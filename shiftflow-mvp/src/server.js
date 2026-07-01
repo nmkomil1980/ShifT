@@ -1,7 +1,9 @@
+import './monitoring.js'; // initialise Sentry first (no-op without SENTRY_DSN)
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { captureException } from './monitoring.js';
 import { q, audit, ensureGeneralChat } from './database.js';
 import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendToUsers } from './push.js';
 import { attachRealtime, broadcastToUsers } from './realtime.js';
@@ -480,7 +482,7 @@ const server=http.createServer(async(req,res)=>{
   applyCors(req,res);
   if(req.method==='OPTIONS'){ res.writeHead(204); return res.end(); }
   try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else staticFile(res,url.pathname); }
-  catch(error) { console.error(error); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
+  catch(error) { console.error(error); captureException(error,{extra:{path:url.pathname,method:req.method}}); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
 });
 attachRealtime(server);
 server.listen(port,host,()=>console.log(`ShiftFlow: http://${host}:${port} (${process.env.DATABASE_URL?'postgres':'sqlite'})`));

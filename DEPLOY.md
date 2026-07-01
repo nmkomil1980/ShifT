@@ -52,6 +52,11 @@ docker compose up --build -d
 | `SITE_ADDRESS` | адрес Caddy: `:80`, `localhost` или домен | `:80` |
 | `HTTP_PORT` / `HTTPS_PORT` | публикуемые порты | `80` / `443` |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | ключи Web Push | генерируются |
+| `SENTRY_DSN` | мониторинг ошибок бэкенда (пусто = выкл.) | — |
+| `VITE_SENTRY_DSN` | мониторинг ошибок веб-консоли (build-arg) | — |
+
+Мобильное приложение включает Sentry через
+`flutter build --dart-define=SENTRY_DSN=...`.
 
 `DATABASE_URL` для API собирается из `POSTGRES_*` автоматически.
 

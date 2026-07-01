@@ -4,6 +4,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# Optional Sentry DSN baked in at build time (empty -> monitoring disabled).
+ARG VITE_SENTRY_DSN=""
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
 RUN npm run build
 
 # --- serve static files + reverse-proxy /api via Caddy (automatic HTTPS) ---

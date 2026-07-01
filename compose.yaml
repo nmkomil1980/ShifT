@@ -44,6 +44,8 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-ShiftFlow <no-reply@shiftflow.local>}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
     volumes:
       - api_data:/app/data
     depends_on:
@@ -53,7 +55,10 @@ services:
     # No host ports: the API is reached only through the web proxy at /api.
 
   web:
-    build: ./web-admin
+    build:
+      context: ./web-admin
+      args:
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     ports:
