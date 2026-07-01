@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import webpush from 'web-push';
-import { db } from './database.js';
+import { q } from './database.js';
 
 // VAPID keys identify this server to browser push services. They must be stable
 // across restarts (otherwise existing subscriptions stop working), so we read
@@ -31,17 +31,18 @@ webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
 
 export const vapidPublicKey = keys.publicKey;
 
-export function saveSubscription(userId, subscription) {
+export async function saveSubscription(userId, subscription) {
   if (!subscription || !subscription.endpoint || !subscription.keys) return;
-  db.prepare(`INSERT INTO push_subscriptions(user_id, endpoint, p256dh, auth)
-    VALUES(?,?,?,?)
-    ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,
-      p256dh=excluded.p256dh, auth=excluded.auth`)
-    .run(userId, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth);
+  await q.run(
+    `INSERT INTO push_subscriptions(user_id, endpoint, p256dh, auth) VALUES(?,?,?,?)
+     ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,
+       p256dh=excluded.p256dh, auth=excluded.auth`,
+    [userId, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth]
+  );
 }
 
-export function removeSubscription(endpoint) {
-  db.prepare('DELETE FROM push_subscriptions WHERE endpoint=?').run(endpoint);
+export async function removeSubscription(endpoint) {
+  await q.run('DELETE FROM push_subscriptions WHERE endpoint=?', [endpoint]);
 }
 
 /**
@@ -50,7 +51,7 @@ export function removeSubscription(endpoint) {
  * and is pruned. Never throws so callers can fire-and-forget.
  */
 export async function sendToUser(userId, payload) {
-  const subs = db.prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=?').all(userId);
+  const subs = await q.all('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=?', [userId]);
   const body = JSON.stringify(payload);
   await Promise.all(subs.map(async (s) => {
     try {
@@ -60,7 +61,7 @@ export async function sendToUser(userId, payload) {
       );
     } catch (err) {
       if (err && (err.statusCode === 404 || err.statusCode === 410)) {
-        removeSubscription(s.endpoint);
+        await removeSubscription(s.endpoint);
       }
     }
   }));

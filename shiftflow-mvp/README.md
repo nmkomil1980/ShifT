@@ -37,11 +37,27 @@ Docker:
 docker compose up --build
 ```
 
+## База данных: SQLite или PostgreSQL
+
+По умолчанию используется локальный файл SQLite (`data/shiftflow.db`) — удобно
+для разработки. Для продакшена задайте `DATABASE_URL`, и приложение
+переключится на **PostgreSQL**:
+
+```bash
+DATABASE_URL="postgresql://postgres:пароль@localhost:5432/shiftflow" node src/server.js
+```
+
+Схема, миграции и seed применяются автоматически при старте на обоих движках.
+Слой `src/db.js` — единый async-интерфейс к БД (транслирует плейсхолдеры и
+диалектные различия), поэтому весь код бизнес-логики диалект-нейтрален. Полный
+список переменных окружения — в `.env.example`.
+
 ## Архитектура
 
 `public/` — адаптивный SPA; `src/server.js` — HTTP/REST и бизнес-правила;
-`src/database.js` — схема, индексы, seed и аудит; `src/security.js` —
-PBKDF2-хеширование паролей и непрозрачные cookie-сессии.
+`src/db.js` — двухдиалектный слой БД (SQLite/PostgreSQL); `src/database.js` —
+схема, индексы, seed и аудит; `src/security.js` — PBKDF2-хеширование паролей и
+непрозрачные cookie-сессии.
 
 Все запросы к бизнес-данным ограничиваются `organization_id`. Пароли не хранятся
 в открытом виде, токены сессий в БД также хешируются.
