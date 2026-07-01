@@ -1,9 +1,16 @@
+import './monitoring.js'; // initialise Sentry first (no-op without SENTRY_DSN)
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { captureException } from './monitoring.js';
 import { q, audit, ensureGeneralChat } from './database.js';
 import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendToUsers } from './push.js';
+import { attachRealtime, broadcastToUsers } from './realtime.js';
+import { sendMail, templates, appUrl } from './mailer.js';
+import { createEmailToken, consumeEmailToken } from './emailtokens.js';
+import { shiftsCsv, staffCsv, shiftsPdf } from './export.js';
+import { rateLimit } from './ratelimit.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -11,14 +18,32 @@ const publicDir = path.join(root, 'public');
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '127.0.0.1';
 const sessionSeconds = Number(process.env.SESSION_DAYS || 14) * 86400;
+// Optional sliding idle timeout: sessions unused for this long become invalid.
+// Unset (0) keeps only the absolute SESSION_DAYS expiry.
+const idleSeconds = Number(process.env.SESSION_IDLE_HOURS || 0) * 3600;
 
 const json = (res, status, data, headers = {}) => {
   res.writeHead(status, {'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers});
   res.end(JSON.stringify(data));
 };
 const fail = (res, status, message) => json(res,status,{error:message});
-const cleanUser = u => u && ({id:u.id,name:u.name,email:u.email,role:u.role,jobTitle:u.job_title,phone:u.phone,status:u.status,organizationId:u.organization_id,organizationName:u.organization_name});
+const cleanUser = u => u && ({id:u.id,name:u.name,email:u.email,role:u.role,jobTitle:u.job_title,phone:u.phone,status:u.status,emailVerified:!!u.email_verified,organizationId:u.organization_id,organizationName:u.organization_name});
 const nowIso = () => new Date().toISOString();
+
+// Email action links. In non-production a devToken can be surfaced in responses
+// (guarded by MAIL_DEV_RETURN_TOKEN) so automated tests can follow the flow.
+const emailPaths = { invite:'/accept-invite', reset:'/reset-password', verify:'/verify-email' };
+const devTokenField = raw => process.env.MAIL_DEV_RETURN_TOKEN==='1' ? {devToken:raw} : {};
+async function issueEmail(userId, to, purpose, vars={}) {
+  const raw = await createEmailToken(userId, purpose);
+  const link = `${appUrl}${emailPaths[purpose]}?token=${raw}`;
+  const tpl = templates[purpose]({ link, ...vars });
+  sendMail({ to, ...tpl }).catch(err => console.error('mail error:', err.message));
+  return raw;
+}
+// Matches the DB timestamp format ('YYYY-MM-DD HH:MM:SS', UTC) used by
+// created_at so that last_read_at string comparisons order correctly.
+const nowStamp = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 
 async function body(req) {
   const chunks=[]; let size=0;
@@ -35,18 +60,54 @@ function bearerToken(req) {
 async function currentUser(req) {
   const token = bearerToken(req) || parseCookies(req.headers.cookie).sf_session;
   if (!token) return null;
-  return q.get(`SELECT u.*,o.name organization_name FROM sessions s JOIN users u ON u.id=s.user_id
+  const row = await q.get(`SELECT u.*,o.name organization_name,s.id sid,s.last_used_at last_used
+    FROM sessions s JOIN users u ON u.id=s.user_id
     JOIN organizations o ON o.id=u.organization_id WHERE s.token_hash=? AND s.expires_at>? AND u.status='active'`,
     [tokenHash(token), nowIso()]);
+  if (!row) return null;
+  const now = Date.now();
+  if (idleSeconds && row.last_used) {
+    const last = new Date(String(row.last_used).replace(' ', 'T') + 'Z').getTime();
+    if (Number.isFinite(last) && now - last > idleSeconds * 1000) {
+      await q.run('DELETE FROM sessions WHERE id=?', [row.sid]);
+      return null;
+    }
+  }
+  // Throttle last_used writes to at most once per 5 minutes.
+  const last = row.last_used ? new Date(String(row.last_used).replace(' ', 'T') + 'Z').getTime() : 0;
+  if (now - last > 5 * 60 * 1000) {
+    await q.run('UPDATE sessions SET last_used_at=? WHERE id=?', [nowStamp(), row.sid]);
+  }
+  return row;
 }
 
 async function createSession(userId) {
   const token=randomToken(), expires=new Date(Date.now()+sessionSeconds*1000).toISOString();
-  await q.run('INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)', [userId,tokenHash(token),expires]);
+  await q.run('INSERT INTO sessions(user_id,token_hash,expires_at,last_used_at) VALUES(?,?,?,?)', [userId,tokenHash(token),expires,nowStamp()]);
   return token;
 }
 
+// Role policy:
+//   owner    — everything, incl. billing and assigning manager/owner roles
+//   manager  — staff (employees only), shifts, requests, org settings, exports
+//   employee — own profile/requests, chat, viewing the schedule
 const manager = user => ['owner','manager'].includes(user.role);
+const isOwner = user => user.role === 'owner';
+
+// Subscription plans (mock billing — no real payment processor wired in; the
+// subscribe endpoint records an invoice and flips the org's plan so the flow is
+// functional and Stripe/Paddle can be slotted in later).
+const PLANS = {
+  monthly:  { id:'monthly',  title:'Monthly',  price:2900,  period:'/мес',   billed:'Ежемесячно',      save:0,  months:1,  features:['Без лимита сотрудников','Стандартная поддержка','Базовая аналитика'] },
+  sixmonth: { id:'sixmonth', title:'6 Months', price:14900, period:'/6 мес', billed:'Раз в 6 месяцев', save:15, months:6,  highlight:true, features:['Без лимита сотрудников','Приоритетная поддержка','Расширенная аналитика','Экспорт данных'] },
+  yearly:   { id:'yearly',   title:'Yearly',   price:24900, period:'/год',   billed:'Раз в год',       save:30, months:12, features:['Всё из 6 Months','Персональный менеджер','API-доступ'] },
+};
+async function loadOrg(orgId) {
+  const o = await q.get('SELECT settings,created_at FROM organizations WHERE id=?', [orgId]);
+  let settings = {}; try { settings = JSON.parse(o.settings || '{}'); } catch { settings = {}; }
+  return { settings, createdAt: o.created_at };
+}
+const saveOrgSettings = (orgId, settings) => q.run('UPDATE organizations SET settings=? WHERE id=?', [JSON.stringify(settings), orgId]);
 const idFrom = (pathname, base) => Number(pathname.slice(base.length).split('/')[0]);
 const required = (value,name,max=200) => {
   if(typeof value!=='string'||!value.trim()) throw new Error(`${name}: обязательное поле`);
@@ -59,6 +120,13 @@ const validDate = value => {
 async function api(req,res,url) {
   const {pathname}=url;
   if(pathname==='/api/health') return json(res,200,{status:'ok',time:nowIso()});
+  // Rate-limit sensitive auth endpoints per client IP (behind a proxy the real
+  // IP is the first X-Forwarded-For entry).
+  if(req.method==='POST'&&['/api/auth/login','/api/auth/register','/api/auth/forgot-password','/api/auth/reset-password','/api/auth/accept-invite'].includes(pathname)){
+    const ip=String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket?.remoteAddress||'unknown';
+    const {allowed,retryAfter}=rateLimit(`${ip}:${pathname}`,Number(process.env.AUTH_RATE_LIMIT||10),Number(process.env.AUTH_RATE_WINDOW_MIN||15)*60*1000);
+    if(!allowed) return json(res,429,{error:'Слишком много попыток. Попробуйте позже.'},{'Retry-After':String(retryAfter)});
+  }
   if(req.method==='POST'&&pathname==='/api/auth/register') {
     const data=await body(req); const name=required(data.name,'Имя',100), company=required(data.company,'Компания',120);
     const email=required(data.email,'Email',200).toLowerCase();
@@ -73,12 +141,14 @@ async function api(req,res,url) {
     } catch(e) { if(e.code==='UNIQUE_VIOLATION') return fail(res,409,'Этот email уже используется'); throw e; }
     const token=await createSession(uid);
     const full=await q.get(`SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.id=?`,[uid]);
-    return json(res,201,{token,user:cleanUser(full)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
+    const verifyRaw=await issueEmail(uid,email,'verify');
+    return json(res,201,{token,user:cleanUser(full),...devTokenField(verifyRaw)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
   }
   if(req.method==='POST'&&pathname==='/api/auth/login') {
     const data=await body(req);
     const user=await q.get(`SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.email=? AND u.status='active'`,[String(data.email||'').toLowerCase()]);
     if(!user||!passwordMatches(String(data.password||''),user.password_hash)) return fail(res,401,'Неверный email или пароль');
+    await q.run('DELETE FROM sessions WHERE expires_at<?', [nowIso()]); // prune expired
     const token=await createSession(user.id); await audit(user,'login','session',null);
     return json(res,200,{token,user:cleanUser(user)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
   }
@@ -87,8 +157,46 @@ async function api(req,res,url) {
     if(token) await q.run('DELETE FROM sessions WHERE token_hash=?', [tokenHash(token)]);
     return json(res,200,{ok:true},{'Set-Cookie':clearSessionCookie()});
   }
+  if(req.method==='POST'&&pathname==='/api/auth/forgot-password') {
+    const d=await body(req); const email=String(d.email||'').toLowerCase().trim();
+    const found=email?await q.get(`SELECT id FROM users WHERE email=? AND status='active'`,[email]):null;
+    let raw=null;
+    if(found) raw=await issueEmail(found.id,email,'reset');
+    // Always 200 so the endpoint does not reveal whether the email exists.
+    return json(res,200,{ok:true,...(found?devTokenField(raw):{})});
+  }
+  if(req.method==='POST'&&pathname==='/api/auth/reset-password') {
+    const d=await body(req);
+    if(String(d.password||'').length<8) return fail(res,422,'Пароль должен быть не короче 8 символов');
+    const uid=await consumeEmailToken(String(d.token||''),'reset');
+    if(!uid) return fail(res,400,'Ссылка недействительна или устарела');
+    await q.run('UPDATE users SET password_hash=?,email_verified=1 WHERE id=?', [passwordHash(d.password),uid]);
+    await q.run('DELETE FROM sessions WHERE user_id=?', [uid]); // log out other sessions
+    return json(res,200,{ok:true});
+  }
+  if(req.method==='POST'&&pathname==='/api/auth/accept-invite') {
+    const d=await body(req);
+    if(String(d.password||'').length<8) return fail(res,422,'Пароль должен быть не короче 8 символов');
+    const uid=await consumeEmailToken(String(d.token||''),'invite');
+    if(!uid) return fail(res,400,'Приглашение недействительно или устарело');
+    await q.run(`UPDATE users SET password_hash=?,email_verified=1,status='active' WHERE id=?`, [passwordHash(d.password),uid]);
+    const token=await createSession(uid);
+    const full=await q.get(`SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.id=?`,[uid]);
+    return json(res,200,{token,user:cleanUser(full)},{'Set-Cookie':sessionCookie(token,sessionSeconds)});
+  }
+  if(req.method==='POST'&&pathname==='/api/auth/verify-email') {
+    const d=await body(req);
+    const uid=await consumeEmailToken(String(d.token||''),'verify');
+    if(!uid) return fail(res,400,'Ссылка недействительна или устарела');
+    await q.run('UPDATE users SET email_verified=1 WHERE id=?', [uid]);
+    return json(res,200,{ok:true});
+  }
   const user=await currentUser(req);
   if(!user) return fail(res,401,'Требуется авторизация');
+  if(pathname==='/api/auth/logout-all'&&req.method==='POST') {
+    await q.run('DELETE FROM sessions WHERE user_id=?', [user.id]);
+    return json(res,200,{ok:true},{'Set-Cookie':clearSessionCookie()});
+  }
   if(pathname==='/api/me'&&req.method==='GET') return json(res,200,{user:cleanUser(user)});
   if(pathname==='/api/me'&&req.method==='PATCH') {
     const d=await body(req);
@@ -103,7 +211,9 @@ async function api(req,res,url) {
   if(pathname==='/api/push/subscribe'&&req.method==='POST') {
     const d=await body(req);
     if(!d.subscription||!d.subscription.endpoint) return fail(res,422,'Некорректная подписка');
-    await saveSubscription(user.id,d.subscription); return json(res,201,{ok:true});
+    const saved=await saveSubscription(user.id,d.subscription);
+    if(!saved) return fail(res,422,'Недопустимый адрес push-подписки');
+    return json(res,201,{ok:true});
   }
   if(pathname==='/api/push/unsubscribe'&&req.method==='POST') {
     const d=await body(req); if(d.endpoint) await removeSubscription(d.endpoint); return json(res,200,{ok:true});
@@ -119,10 +229,49 @@ async function api(req,res,url) {
     const d=await body(req);
     const org=await q.get('SELECT name,settings FROM organizations WHERE id=?', [user.organization_id]);
     let current={}; try{current=JSON.parse(org.settings||'{}');}catch{current={};}
-    const merged=d.settings&&typeof d.settings==='object'?{...current,...d.settings}:current;
+    // Merge client settings but never let `billing` be set this way — it is
+    // owner-only and managed solely by the /api/billing/* endpoints.
+    const merged=d.settings&&typeof d.settings==='object'?{...current,...d.settings,billing:current.billing}:current;
     const name=typeof d.name==='string'&&d.name.trim()?d.name.trim().slice(0,120):org.name;
     await q.run('UPDATE organizations SET name=?,settings=? WHERE id=?', [name,JSON.stringify(merged),user.organization_id]);
     await audit(user,'update','organization',user.organization_id);
+    return json(res,200,{ok:true});
+  }
+  if(pathname==='/api/billing'&&req.method==='GET') {
+    const {settings,createdAt}=await loadOrg(user.organization_id);
+    const b=settings.billing||{};
+    const created=new Date(String(createdAt).replace(' ','T')+'Z');
+    const trialEndsAt=b.trialEndsAt||new Date(created.getTime()+14*86400000).toISOString();
+    const activePlan=b.plan&&PLANS[b.plan]?b.plan:null;
+    const periodEnd=activePlan?b.currentPeriodEnd:trialEndsAt;
+    const daysLeft=Math.max(0,Math.ceil((new Date(periodEnd).getTime()-Date.now())/86400000));
+    const invoices=await q.all(`SELECT id,plan,amount_cents "amountCents",currency,created_at "createdAt" FROM invoices WHERE organization_id=? ORDER BY id DESC`, [user.organization_id]);
+    return json(res,200,{
+      billing:{plan:activePlan,status:activePlan?'active':'trialing',trialEndsAt,currentPeriodEnd:b.currentPeriodEnd||null,daysLeft,paymentMethod:b.paymentMethod||null},
+      plans:Object.values(PLANS),
+      invoices:invoices.map(i=>({...i,amountCents:Number(i.amountCents)}))
+    });
+  }
+  if(pathname==='/api/billing/subscribe'&&req.method==='POST') {
+    if(!isOwner(user)) return fail(res,403,'Только владелец может управлять подпиской');
+    const d=await body(req); const plan=PLANS[d.plan];
+    if(!plan) return fail(res,422,'Неизвестный тариф');
+    const {settings}=await loadOrg(user.organization_id);
+    const end=new Date(Date.now()+plan.months*30*86400000).toISOString();
+    settings.billing={...(settings.billing||{}),plan:plan.id,status:'active',startedAt:nowIso(),currentPeriodEnd:end};
+    await saveOrgSettings(user.organization_id,settings);
+    await q.run('INSERT INTO invoices(organization_id,plan,amount_cents,currency) VALUES(?,?,?,?)', [user.organization_id,plan.id,plan.price,'USD']);
+    await audit(user,'subscribe','billing',user.organization_id,{plan:plan.id});
+    return json(res,200,{ok:true,plan:plan.id});
+  }
+  if(pathname==='/api/billing/payment-method'&&req.method==='POST') {
+    if(!isOwner(user)) return fail(res,403,'Только владелец может управлять оплатой');
+    const d=await body(req);
+    const last4=String(d.last4||'').replace(/\D/g,'').slice(-4);
+    if(last4.length!==4) return fail(res,422,'Некорректный номер карты');
+    const {settings}=await loadOrg(user.organization_id);
+    settings.billing={...(settings.billing||{}),paymentMethod:{brand:String(d.brand||'CARD').slice(0,20),last4,exp:String(d.exp||'').slice(0,7)}};
+    await saveOrgSettings(user.organization_id,settings);
     return json(res,200,{ok:true});
   }
   if(pathname==='/api/notifications'&&req.method==='GET') {
@@ -158,23 +307,38 @@ async function api(req,res,url) {
     return json(res,200,{stats:{staff:num(stats.staff),activeToday:num(stats.activeToday),pending:num(stats.pending),openShifts:num(stats.openShifts)},shifts,activity});
   }
   if(pathname==='/api/staff'&&req.method==='GET') {
-    return json(res,200,{staff:await q.all(`SELECT id,name,email,role,job_title "jobTitle",phone,status,created_at "createdAt" FROM users WHERE organization_id=? ORDER BY name`, [user.organization_id])});
+    const staff=await q.all(`SELECT id,name,email,role,job_title "jobTitle",phone,status,created_at "createdAt" FROM users WHERE organization_id=? ORDER BY name`, [user.organization_id]);
+    // Contact details (email/phone) are only exposed to managers/owners.
+    const scoped=manager(user)?staff:staff.map(s=>({...s,email:'',phone:''}));
+    return json(res,200,{staff:scoped});
   }
   if(pathname==='/api/staff'&&req.method==='POST') {
     if(!manager(user)) return fail(res,403,'Недостаточно прав');
     const d=await body(req), email=required(d.email,'Email').toLowerCase();
+    // If a password is supplied, use it directly; otherwise create an inactive
+    // account with a random password and email an invite to set one.
+    const hasPassword=typeof d.password==='string'&&d.password.length>=8;
+    const invite=!hasPassword;
+    const passwordHashValue=passwordHash(hasPassword?d.password:randomToken());
     try {
+      const role=isOwner(user)?(['manager','employee'].includes(d.role)?d.role:'employee'):'employee';
       const result=await q.insert(`INSERT INTO users(organization_id,name,email,password_hash,role,job_title,phone) VALUES(?,?,?,?,?,?,?)`,
-        [user.organization_id,required(d.name,'Имя',100),email,passwordHash(d.password||'Welcome123!'),['manager','employee'].includes(d.role)?d.role:'employee',String(d.jobTitle||'').slice(0,100),String(d.phone||'').slice(0,40)]);
+        [user.organization_id,required(d.name,'Имя',100),email,passwordHashValue,role,String(d.jobTitle||'').slice(0,100),String(d.phone||'').slice(0,40)]);
       await ensureGeneralChat(user.organization_id,result.id);
-      await audit(user,'create','user',result.id,{email}); return json(res,201,{id:result.id});
+      await audit(user,'create','user',result.id,{email});
+      let raw=null;
+      if(invite) raw=await issueEmail(result.id,email,'invite',{orgName:user.organization_name});
+      return json(res,201,{id:result.id,invited:invite,...(invite?devTokenField(raw):{})});
     } catch(e) { if(e.code==='UNIQUE_VIOLATION') return fail(res,409,'Сотрудник с таким email уже существует'); throw e; }
   }
   if(pathname.startsWith('/api/staff/')&&req.method==='PATCH') {
     if(!manager(user)) return fail(res,403,'Недостаточно прав'); const id=idFrom(pathname,'/api/staff/'),d=await body(req);
     const target=await q.get('SELECT * FROM users WHERE id=? AND organization_id=?', [id,user.organization_id]); if(!target)return fail(res,404,'Сотрудник не найден');
+    // Managers may only edit employees and cannot change roles; owners can.
+    if(!isOwner(user)&&target.role!=='employee') return fail(res,403,'Можно изменять только сотрудников');
+    const newRole=isOwner(user)?(['owner','manager','employee'].includes(d.role)?d.role:target.role):target.role;
     await q.run(`UPDATE users SET name=?,role=?,job_title=?,phone=?,status=? WHERE id=?`, [
-      String(d.name??target.name).slice(0,100), ['owner','manager','employee'].includes(d.role)?d.role:target.role,
+      String(d.name??target.name).slice(0,100), newRole,
       String(d.jobTitle??target.job_title).slice(0,100),String(d.phone??target.phone).slice(0,40),['active','inactive'].includes(d.status)?d.status:target.status,id]);
     await audit(user,'update','user',id); return json(res,200,{ok:true});
   }
@@ -265,7 +429,7 @@ async function api(req,res,url) {
     if(!member) return fail(res,404,'Диалог не найден');
     const messages=await q.all(`SELECT m.id,m.body,m.created_at "createdAt",m.user_id "userId",u.name "userName"
       FROM messages m JOIN users u ON u.id=m.user_id WHERE m.conversation_id=? ORDER BY m.id`, [id]);
-    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowIso(),id,user.id]);
+    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowStamp(),id,user.id]);
     return json(res,200,{messages});
   }
   if(/^\/api\/conversations\/\d+\/messages$/.test(pathname)&&req.method==='POST') {
@@ -275,7 +439,12 @@ async function api(req,res,url) {
     if(!member) return fail(res,404,'Диалог не найден');
     const d=await body(req); const text=required(d.body,'Сообщение',2000);
     const r=await q.insert('INSERT INTO messages(conversation_id,user_id,body) VALUES(?,?,?)', [id,user.id,text]);
-    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowIso(),id,user.id]);
+    await q.run('UPDATE conversation_members SET last_read_at=? WHERE conversation_id=? AND user_id=?', [nowStamp(),id,user.id]);
+    // Fan out the new message to every member's live sockets.
+    const created=await q.get('SELECT created_at FROM messages WHERE id=?', [r.id]);
+    const members=(await q.all('SELECT user_id FROM conversation_members WHERE conversation_id=?', [id])).map(m=>m.user_id);
+    broadcastToUsers(members,{type:'message',conversationId:id,message:{
+      id:r.id,body:text,createdAt:created.created_at,userId:user.id,userName:user.name}});
     return json(res,201,{id:r.id});
   }
   if(pathname==='/api/conversations/direct'&&req.method==='POST') {
@@ -312,6 +481,24 @@ async function api(req,res,url) {
     const roles=rolesRaw.map(r=>({role:r.role,count:Number(r.count)}));
     return json(res,200,{days,roles});
   }
+  if(pathname.startsWith('/api/export/')&&req.method==='GET') {
+    if(!manager(user)) return fail(res,403,'Недостаточно прав');
+    const from=url.searchParams.get('from')||new Date(Date.now()-14*86400000).toISOString();
+    const to=url.searchParams.get('to')||new Date(Date.now()+31*86400000).toISOString();
+    const attach=(name,type)=>({'Content-Type':type,'Content-Disposition':`attachment; filename="${name}"`,'Cache-Control':'no-store'});
+    if(pathname==='/api/export/staff.csv') {
+      const staff=await q.all(`SELECT name,email,role,job_title "jobTitle",phone,status FROM users WHERE organization_id=? ORDER BY name`, [user.organization_id]);
+      res.writeHead(200,attach('staff.csv','text/csv; charset=utf-8')); return res.end(staffCsv(staff));
+    }
+    if(pathname==='/api/export/shifts.csv'||pathname==='/api/export/shifts.pdf') {
+      const shifts=await q.all(`SELECT s.*,u.name user_name,u.job_title FROM shifts s LEFT JOIN users u ON u.id=s.user_id
+        WHERE s.organization_id=? AND s.starts_at<? AND s.ends_at>? ORDER BY s.starts_at`, [user.organization_id,to,from]);
+      if(pathname.endsWith('.csv')) { res.writeHead(200,attach('shifts.csv','text/csv; charset=utf-8')); return res.end(shiftsCsv(shifts)); }
+      res.writeHead(200,attach('schedule.pdf','application/pdf'));
+      return shiftsPdf(res,{orgName:user.organization_name,from,to,shifts});
+    }
+    return fail(res,404,'Экспорт не найден');
+  }
   return fail(res,404,'Метод API не найден');
 }
 
@@ -329,14 +516,21 @@ const allowedOrigins=(process.env.CORS_ORIGINS||'').split(',').map(s=>s.trim()).
 function applyCors(req,res){
   const origin=req.headers.origin;
   if(!origin) return;
-  if(allowedOrigins.includes('*')||allowedOrigins.includes(origin)){
+  const explicit=allowedOrigins.includes(origin);
+  const wildcard=allowedOrigins.includes('*');
+  if(!explicit&&!wildcard) return;
+  // Credentials are only reflected for an explicitly allowed origin; a wildcard
+  // config falls back to anonymous '*' (never arbitrary-origin + credentials).
+  if(explicit){
     res.setHeader('Access-Control-Allow-Origin',origin);
-    res.setHeader('Vary','Origin');
     res.setHeader('Access-Control-Allow-Credentials','true');
-    res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
-    res.setHeader('Access-Control-Max-Age','86400');
+    res.setHeader('Vary','Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin','*');
   }
+  res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
+  res.setHeader('Access-Control-Max-Age','86400');
 }
 
 const server=http.createServer(async(req,res)=>{
@@ -344,7 +538,8 @@ const server=http.createServer(async(req,res)=>{
   applyCors(req,res);
   if(req.method==='OPTIONS'){ res.writeHead(204); return res.end(); }
   try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else staticFile(res,url.pathname); }
-  catch(error) { console.error(error); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
+  catch(error) { console.error(error); captureException(error,{extra:{path:url.pathname,method:req.method}}); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
 });
+attachRealtime(server);
 server.listen(port,host,()=>console.log(`ShiftFlow: http://${host}:${port} (${process.env.DATABASE_URL?'postgres':'sqlite'})`));
 export { server };

@@ -7,6 +7,15 @@
 {$SITE_ADDRESS::80} {
 	encode gzip
 
+	# Security headers.
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https: wss:; script-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'"
+		-Server
+	}
+
 	# API calls go to the backend container.
 	handle /api/* {
 		reverse_proxy api:3000

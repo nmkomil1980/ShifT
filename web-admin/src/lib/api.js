@@ -46,3 +46,21 @@ export const api = {
   patch: (path, body) => request('PATCH', path, body ?? {}),
   del: (path) => request('DELETE', path)
 };
+
+// Fetch a file with auth and trigger a browser download.
+export async function download(path, filename) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`/api${path}`, { headers, credentials: 'include' });
+  if (!res.ok) throw new Error(`Не удалось скачать файл (${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../theme.dart';
 import '../api/api_client.dart';
 import '../api/auth_controller.dart';
+import '../api/realtime_service.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
 
@@ -21,15 +23,24 @@ class _ChatScreenState extends State<ChatScreen> {
   List<Message> _messages = [];
   bool _loading = true;
   bool _sending = false;
+  StreamSubscription? _rt;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _rt = RealtimeService.instance.events.listen((evt) {
+      if (evt['type'] == 'message' && evt['conversationId'] == widget.conversationId) {
+        // Refetch so the message list stays consistent and the read marker
+        // advances on the server (avoids phantom unread counts).
+        _load();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _rt?.cancel();
     _input.dispose();
     _scroll.dispose();
     super.dispose();

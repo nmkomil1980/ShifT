@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme.dart';
 import '../api/auth_controller.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -105,19 +106,18 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                const Text.rich(
-                  TextSpan(
-                    text: 'Нет аккаунта? ',
-                    style: TextStyle(color: AppColors.textMuted),
-                    children: [
-                      TextSpan(
-                        text: 'Свяжитесь с администратором',
-                        style: TextStyle(
-                            color: AppColors.indigo,
-                            fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    const Text('Нет аккаунта? ', style: TextStyle(color: AppColors.textMuted)),
+                    GestureDetector(
+                      onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const RegisterScreen())),
+                      child: const Text('Зарегистрировать компанию',
+                          style: TextStyle(color: AppColors.indigo, fontWeight: FontWeight.w600)),
+                    ),
+                  ],
                 ),
               ],
             ),

@@ -1,14 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'theme.dart';
 import 'api/auth_controller.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_shell.dart';
 
+// Error monitoring is opt-in via --dart-define=SENTRY_DSN=...; without it the app
+// runs unchanged.
+const _sentryDsn = String.fromEnvironment('SENTRY_DSN');
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('ru', null);
-  runApp(const ShiftFlowApp());
+
+  if (_sentryDsn.isEmpty) {
+    runApp(const ShiftFlowApp());
+  } else {
+    await SentryFlutter.init(
+      (options) => options.dsn = _sentryDsn,
+      appRunner: () => runApp(const ShiftFlowApp()),
+    );
+  }
 }
 
 class ShiftFlowApp extends StatefulWidget {
