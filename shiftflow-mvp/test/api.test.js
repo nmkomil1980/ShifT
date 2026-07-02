@@ -28,7 +28,7 @@ async function waitForHealth(retries = 40) {
 test.before(async () => {
   server = spawn(process.execPath, ['src/server.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), DATABASE_PATH: dbPath, CORS_ORIGINS: 'http://localhost:5173', MAIL_DEV_RETURN_TOKEN: '1', APP_URL: 'http://localhost:5173', AUTH_RATE_LIMIT: '200' },
+    env: { ...process.env, PORT: String(port), DATABASE_PATH: dbPath, CORS_ORIGINS: 'http://localhost:5173', MAIL_DEV_RETURN_TOKEN: '1', APP_URL: 'http://localhost:5173', AUTH_RATE_LIMIT: '200', TRUST_PROXY: '1' },
     stdio: 'ignore'
   });
   await waitForHealth();
@@ -224,6 +224,21 @@ test('a shift can be rescheduled and reassigned via PATCH', async () => {
   const updated = list.shifts.find((s) => s.id === created.id);
   assert.equal(updated.user_id, 2);
   assert.equal(updated.status, 'scheduled');
+
+  // Regression: unassigning a completed shift (without sending a status, as
+  // the web modal does) must NOT resurrect it to 'open'.
+  await fetch(`${base}/api/shifts/${created.id}`, {
+    method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'completed' })
+  });
+  await fetch(`${base}/api/shifts/${created.id}`, {
+    method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: null, notes: 'после смены' })
+  });
+  const after = await (await fetch(`${base}/api/shifts?from=${new Date(Date.now() - 86400000).toISOString()}&to=${new Date(Date.now() + 5 * 86400000).toISOString()}`, { headers: auth })).json();
+  const done = after.shifts.find((s) => s.id === created.id);
+  assert.equal(done.status, 'completed');
+  assert.equal(done.notes, 'после смены'); // notes are editable via PATCH
 });
 
 test('organization settings can be read and updated', async () => {

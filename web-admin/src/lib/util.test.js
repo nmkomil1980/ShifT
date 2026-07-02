@@ -19,8 +19,10 @@ describe('timeRange', () => {
 });
 
 describe('dayKey', () => {
-  it('returns the ISO date part', () => {
-    expect(dayKey('2026-07-01T09:00:00.000Z')).toBe('2026-07-01');
+  it('keys by the LOCAL date so shifts land in the local calendar column', () => {
+    // A local-noon Date must key to that same local day in every timezone.
+    const localNoon = new Date(2026, 6, 1, 12, 0, 0);
+    expect(dayKey(localNoon)).toBe('2026-07-01');
   });
 });
 

@@ -8,7 +8,13 @@ export const timeRange = (startsAt, endsAt) => {
   return `${pad(s.getHours())}:${pad(s.getMinutes())} - ${pad(e.getHours())}:${pad(e.getMinutes())}`;
 };
 
-export const dayKey = (iso) => new Date(iso).toISOString().slice(0, 10);
+// Local-date key: the calendar builds its columns from local Dates, so the
+// key must use local components too (toISOString would shift the day in any
+// timezone east/west of UTC).
+export const dayKey = (iso) => {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
 export const RU_DAYS = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'];
 export const RU_MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];

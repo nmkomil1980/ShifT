@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { useI18n } from '../lib/i18n.jsx';
@@ -16,6 +17,19 @@ export default function Layout({ children, onQuickAdd }) {
   const { user, logout } = useAuth();
   const { t, lang, setLang } = useI18n();
   const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const menuRef = useRef(null);
+  const helpRef = useRef(null);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+      if (helpRef.current && !helpRef.current.contains(e.target)) setHelpOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -57,8 +71,30 @@ export default function Layout({ children, onQuickAdd }) {
           <NavLink to="/notifications" className="icon-btn" aria-label={t('nav.notifications')}>
             <I.Bell width={20} height={20} /><span className="dot" />
           </NavLink>
-          <button className="icon-btn" aria-label="?"><I.Help width={20} height={20} /></button>
-          <div className="avatar" title={user?.name}>{initials(user?.name)}</div>
+          <div className="menu-anchor" ref={helpRef}>
+            <button type="button" className="icon-btn" aria-label="Помощь" onClick={() => setHelpOpen((v) => !v)}>
+              <I.Help width={20} height={20} />
+            </button>
+            {helpOpen && (
+              <div className="dropdown">
+                <a href="https://github.com/nmkomil1980/shift" target="_blank" rel="noreferrer" onClick={() => setHelpOpen(false)}>Документация</a>
+                <a href="mailto:support@shiftflow.local" onClick={() => setHelpOpen(false)}>Написать в поддержку</a>
+              </div>
+            )}
+          </div>
+          <div className="menu-anchor" ref={menuRef}>
+            <button type="button" className="avatar" title={user?.name} onClick={() => setMenuOpen((v) => !v)}>{initials(user?.name)}</button>
+            {menuOpen && (
+              <div className="dropdown dropdown-right">
+                <div className="dropdown-user">
+                  <strong>{user?.name}</strong>
+                  <span>{user?.email}</span>
+                </div>
+                <NavLink to="/settings" onClick={() => setMenuOpen(false)}><I.Settings width={16} height={16} /> {t('nav.settings')}</NavLink>
+                <a onClick={() => { setMenuOpen(false); logout(); }} style={{ cursor: 'pointer' }}><I.Logout width={16} height={16} /> {t('nav.logout')}</a>
+              </div>
+            )}
+          </div>
         </header>
         {children}
       </div>

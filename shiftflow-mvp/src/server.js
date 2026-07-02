@@ -1,8 +1,5 @@
 import './monitoring.js'; // initialise Sentry first (no-op without SENTRY_DSN)
 import http from 'node:http';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { captureException } from './monitoring.js';
 import { q, audit, ensureGeneralChat } from './database.js';
 import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendToUsers } from './push.js';
@@ -13,8 +10,6 @@ import { shiftsCsv, staffCsv, shiftsPdf } from './export.js';
 import { rateLimit } from './ratelimit.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
-const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const publicDir = path.join(root, 'public');
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '127.0.0.1';
 const sessionSeconds = Number(process.env.SESSION_DAYS || 14) * 86400;
@@ -117,13 +112,28 @@ const validDate = value => {
   const date=new Date(value); if(!value||Number.isNaN(date.valueOf())) throw new Error('Некорректная дата'); return date.toISOString();
 };
 
+// UTC ISO bounds [start, end) of "today" in the given IANA timezone, so
+// day-scoped stats follow the organization's clock rather than UTC.
+function orgDayRangeUtc(tz) {
+  try { new Intl.DateTimeFormat('en',{timeZone:tz}); } catch { tz='UTC'; } // unknown tz in DB -> UTC
+  const day=new Date().toLocaleDateString('en-CA',{timeZone:tz});
+  const guess=new Date(`${day}T00:00:00Z`);
+  const offsetMs=new Date(guess.toLocaleString('en-US',{timeZone:tz})).getTime()-guess.getTime();
+  const start=new Date(guess.getTime()-offsetMs);
+  return [start.toISOString(), new Date(start.getTime()+86400000).toISOString()];
+}
+
 async function api(req,res,url) {
   const {pathname}=url;
   if(pathname==='/api/health') return json(res,200,{status:'ok',time:nowIso()});
-  // Rate-limit sensitive auth endpoints per client IP (behind a proxy the real
-  // IP is the first X-Forwarded-For entry).
-  if(req.method==='POST'&&['/api/auth/login','/api/auth/register','/api/auth/forgot-password','/api/auth/reset-password','/api/auth/accept-invite'].includes(pathname)){
-    const ip=String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket?.remoteAddress||'unknown';
+  // Rate-limit sensitive auth endpoints per client IP. X-Forwarded-For is
+  // client-controlled, so it is only honoured when TRUST_PROXY is set (i.e.
+  // the app is actually behind a reverse proxy that overwrites the header) —
+  // otherwise an attacker could rotate spoofed IPs to bypass the limit or
+  // spoof a victim's IP to lock them out.
+  if(req.method==='POST'&&['/api/auth/login','/api/auth/register','/api/auth/forgot-password','/api/auth/reset-password','/api/auth/accept-invite','/api/auth/verify-email'].includes(pathname)){
+    const forwarded=process.env.TRUST_PROXY?String(req.headers['x-forwarded-for']||'').split(',')[0].trim():'';
+    const ip=forwarded||req.socket?.remoteAddress||'unknown';
     const {allowed,retryAfter}=rateLimit(`${ip}:${pathname}`,Number(process.env.AUTH_RATE_LIMIT||10),Number(process.env.AUTH_RATE_WINDOW_MIN||15)*60*1000);
     if(!allowed) return json(res,429,{error:'Слишком много попыток. Попробуйте позже.'},{'Retry-After':String(retryAfter)});
   }
@@ -221,7 +231,7 @@ async function api(req,res,url) {
   if(pathname==='/api/organization'&&req.method==='GET') {
     const org=await q.get('SELECT id,name,timezone,locale,settings FROM organizations WHERE id=?', [user.organization_id]);
     let settings={}; try{settings=JSON.parse(org.settings||'{}');}catch{settings={};}
-    const defaults={industry:'',language:org.locale||'ru',operatingDays:[1,2,3,4,5],defaultShiftHours:8,overtimeThreshold:40,autoApproveSwaps:false,managerOverrides:false,roles:[]};
+    const defaults={industry:'',language:org.locale||'ru',operatingDays:[1,2,3,4,5],openTime:'09:00',closeTime:'18:00',defaultShiftHours:8,overtimeThreshold:40,autoApproveSwaps:false,managerOverrides:false,roles:[]};
     return json(res,200,{organization:{id:org.id,name:org.name,timezone:org.timezone,settings:{...defaults,...settings}}});
   }
   if(pathname==='/api/organization'&&req.method==='PATCH') {
@@ -292,15 +302,17 @@ async function api(req,res,url) {
   }
 
   if(pathname==='/api/dashboard'&&req.method==='GET') {
-    const org=user.organization_id, today=nowIso().slice(0,10);
+    const org=user.organization_id;
+    const tz=(await q.get('SELECT timezone FROM organizations WHERE id=?', [org]))?.timezone||'Europe/Moscow';
+    const [dayStart,dayEnd]=orgDayRangeUtc(tz);
     const stats=await q.get(`SELECT
       (SELECT COUNT(*) FROM users WHERE organization_id=? AND status='active') staff,
-      (SELECT COUNT(*) FROM shifts WHERE organization_id=? AND substr(starts_at,1,10)=? AND status IN ('active','scheduled')) "activeToday",
+      (SELECT COUNT(*) FROM shifts WHERE organization_id=? AND starts_at>=? AND starts_at<? AND status IN ('active','scheduled')) "activeToday",
       (SELECT COUNT(*) FROM requests WHERE organization_id=? AND status='pending') pending,
       (SELECT COUNT(*) FROM shifts WHERE organization_id=? AND status='open' AND starts_at>=?) "openShifts"`,
-      [org,org,today,org,org,nowIso()]);
+      [org,org,dayStart,dayEnd,org,org,nowIso()]);
     const shifts=await q.all(`SELECT s.*,u.name user_name,u.job_title FROM shifts s LEFT JOIN users u ON u.id=s.user_id
-      WHERE s.organization_id=? AND substr(s.starts_at,1,10)=? ORDER BY s.starts_at LIMIT 8`, [org,today]);
+      WHERE s.organization_id=? AND s.starts_at>=? AND s.starts_at<? ORDER BY s.starts_at LIMIT 8`, [org,dayStart,dayEnd]);
     const activity=await q.all(`SELECT a.*,u.name user_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id
       WHERE a.organization_id=? ORDER BY a.id DESC LIMIT 6`, [org]);
     const num=(x)=>Number(x)||0;
@@ -370,10 +382,15 @@ async function api(req,res,url) {
       else { const a=await q.get('SELECT id FROM users WHERE id=? AND organization_id=?', [Number(d.userId),user.organization_id]);
         if(!a)return fail(res,422,'Сотрудник не найден'); userId=Number(d.userId); }
     }
-    const status=d.status&&['scheduled','open','active','completed','cancelled'].includes(d.status)?d.status:(userId?(shift.status==='open'?'scheduled':shift.status):'open');
-    await q.run('UPDATE shifts SET user_id=?,title=?,starts_at=?,ends_at=?,location=?,status=? WHERE id=?', [
+    // Only flip scheduled<->open automatically when assignment changes;
+    // completed/cancelled/active shifts keep their status unless set explicitly.
+    let status=shift.status;
+    if(d.status&&['scheduled','open','active','completed','cancelled'].includes(d.status)) status=d.status;
+    else if(['scheduled','open'].includes(shift.status)) status=userId?'scheduled':'open';
+    await q.run('UPDATE shifts SET user_id=?,title=?,starts_at=?,ends_at=?,location=?,notes=?,status=? WHERE id=?', [
       userId,d.title!==undefined?required(d.title,'Название',120):shift.title,start,end,
-      d.location!==undefined?String(d.location).slice(0,120):shift.location,status,id]);
+      d.location!==undefined?String(d.location).slice(0,120):shift.location,
+      d.notes!==undefined?String(d.notes).slice(0,1000):shift.notes,status,id]);
     await audit(user,'update','shift',id); return json(res,200,{ok:true});
   }
   if(pathname.startsWith('/api/shifts/')&&req.method==='DELETE') {
@@ -502,14 +519,12 @@ async function api(req,res,url) {
   return fail(res,404,'Метод API не найден');
 }
 
-function staticFile(res,pathname) {
-  let relative=pathname==='/'?'index.html':pathname.slice(1);
-  if(!path.extname(relative)) relative='index.html';
-  const file=path.resolve(publicDir,relative);
-  if(!file.startsWith(publicDir)||!fs.existsSync(file)) return fail(res,404,'Файл не найден');
-  const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml'};
-  res.writeHead(200,{'Content-Type':types[path.extname(file)]||'application/octet-stream','Cache-Control':process.env.NODE_ENV==='production'&&path.extname(file)!=='.html'?'public, max-age=3600':'no-cache'});
-  fs.createReadStream(file).pipe(res);
+// The backend is API-only: the web console lives in web-admin (Vite dev server
+// or the Caddy-served build). Anything outside /api redirects there.
+function redirectToApp(res) {
+  const appUrl=process.env.APP_URL||'http://localhost:5173';
+  res.writeHead(302,{Location:appUrl,'Cache-Control':'no-store'});
+  res.end();
 }
 
 const allowedOrigins=(process.env.CORS_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -537,8 +552,15 @@ const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
   applyCors(req,res);
   if(req.method==='OPTIONS'){ res.writeHead(204); return res.end(); }
-  try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else staticFile(res,url.pathname); }
-  catch(error) { console.error(error); captureException(error,{extra:{path:url.pathname,method:req.method}}); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
+  try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else redirectToApp(res); }
+  catch(error) {
+    console.error(error); captureException(error,{extra:{path:url.pathname,method:req.method}});
+    // If a streamed response (PDF/CSV export) already sent headers, we cannot
+    // write an error body — abort the connection instead of crashing on a
+    // second writeHead.
+    if(res.headersSent) return res.destroy();
+    fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса'));
+  }
 });
 attachRealtime(server);
 server.listen(port,host,()=>console.log(`ShiftFlow: http://${host}:${port} (${process.env.DATABASE_URL?'postgres':'sqlite'})`));

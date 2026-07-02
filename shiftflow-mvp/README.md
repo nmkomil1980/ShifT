@@ -54,7 +54,7 @@ DATABASE_URL="postgresql://postgres:пароль@localhost:5432/shiftflow" node 
 
 ## Архитектура
 
-`public/` — адаптивный SPA; `src/server.js` — HTTP/REST и бизнес-правила;
+`src/server.js` — HTTP/REST и бизнес-правила;
 `src/db.js` — двухдиалектный слой БД (SQLite/PostgreSQL); `src/database.js` —
 схема, индексы, seed и аудит; `src/security.js` — PBKDF2-хеширование паролей и
 непрозрачные cookie-сессии.

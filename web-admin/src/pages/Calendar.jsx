@@ -23,7 +23,9 @@ export default function Calendar() {
   const [anchor, setAnchor] = useState(() => new Date());
   const [shifts, setShifts] = useState(null);
   const [staff, setStaff] = useState([]);
-  const [defaultHours, setDefaultHours] = useState(8);
+  // Working hours of the venue (set during onboarding / in Settings): new
+  // shifts default to this window.
+  const [workHours, setWorkHours] = useState({ open: '09:00', close: '18:00' });
   const [modal, setModal] = useState(null); // { day } to create, { shift } to edit
   const [dropError, setDropError] = useState('');
   const [dragOverKey, setDragOverKey] = useState(null);
@@ -49,7 +51,10 @@ export default function Calendar() {
   useEffect(() => { api.get('/staff').then((d) => setStaff(d.staff)).catch(() => {}); }, []);
   useEffect(() => {
     api.get('/organization')
-      .then((d) => setDefaultHours(d.organization.settings.defaultShiftHours || 8))
+      .then((d) => {
+        const s = d.organization.settings;
+        setWorkHours({ open: s.openTime || '09:00', close: s.closeTime || '18:00' });
+      })
       .catch(() => {});
   }, []);
 
@@ -67,8 +72,9 @@ export default function Calendar() {
     let payload;
     try { payload = JSON.parse(e.dataTransfer.getData('application/json')); } catch { return; }
     if (payload.kind === 'staff') {
-      const start = new Date(day); start.setHours(9, 0, 0, 0);
-      const end = new Date(start.getTime() + defaultHours * 3600000);
+      const start = atTime(day, workHours.open);
+      let end = atTime(day, workHours.close);
+      if (end <= start) end = new Date(end.getTime() + 86400000); // overnight venue
       api.post('/shifts', { title: 'Смена', userId: payload.id, location: '', startsAt: start.toISOString(), endsAt: end.toISOString() })
         .then(load).catch((err) => setDropError(err.message));
     } else if (payload.kind === 'shift') {
@@ -133,8 +139,8 @@ export default function Calendar() {
             <button className="icon-btn" onClick={() => navigate(1)}><I.ChevronRight width={18} height={18} /></button>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <button className="btn" onClick={() => download(`/export/shifts.csv?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'shifts.csv').catch((e) => setDropError(e.message))}>Экспорт CSV</button>
-            <button className="btn" onClick={() => download(`/export/shifts.pdf?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'schedule.pdf').catch((e) => setDropError(e.message))}>PDF</button>
+            {isManager && <button className="btn" onClick={() => download(`/export/shifts.csv?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'shifts.csv').catch((e) => setDropError(e.message))}>Экспорт CSV</button>}
+            {isManager && <button className="btn" onClick={() => download(`/export/shifts.pdf?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'schedule.pdf').catch((e) => setDropError(e.message))}>PDF</button>}
             {isManager && <button className="btn primary" onClick={() => setModal({ day: new Date() })}><I.Plus width={18} height={18} /> Новая смена</button>}
           </div>
         </div>
@@ -207,6 +213,7 @@ export default function Calendar() {
         <ShiftModal
           shift={modal.shift}
           day={modal.day || new Date()}
+          workHours={workHours}
           staff={staff}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); load(); }}
@@ -216,21 +223,33 @@ export default function Calendar() {
   );
 }
 
-function toLocalInput(iso) {
-  const d = new Date(iso);
+function splitLocalInput(startIso, endIso) {
   const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const parts = (iso) => {
+    const d = new Date(iso);
+    return {
+      date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+      time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    };
+  };
+  const s = parts(startIso), e = parts(endIso);
+  return { startDate: s.date, startTime: s.time, endDate: e.date, endTime: e.time };
 }
-function dayAt(date, hour) { const d = new Date(date); d.setHours(hour, 0, 0, 0); return d; }
+function atTime(date, hhmm) {
+  const [h, m] = String(hhmm || '9:00').split(':').map(Number);
+  const d = new Date(date); d.setHours(h || 0, m || 0, 0, 0); return d;
+}
 
-function ShiftModal({ shift, day, staff, onClose, onSaved }) {
+function ShiftModal({ shift, day, workHours, staff, onClose, onSaved }) {
   const editing = !!shift;
   const [form, setForm] = useState({
     title: shift?.title || 'Смена',
     userId: shift?.user_id ? String(shift.user_id) : '',
     location: shift?.location || '',
-    startsAt: toLocalInput(shift?.starts_at || dayAt(day, 9)),
-    endsAt: toLocalInput(shift?.ends_at || dayAt(day, 17)),
+    ...splitLocalInput(
+      shift?.starts_at || atTime(day, workHours?.open || '09:00'),
+      shift?.ends_at || atTime(day, workHours?.close || '18:00')
+    ),
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -242,8 +261,8 @@ function ShiftModal({ shift, day, staff, onClose, onSaved }) {
       title: form.title,
       userId: form.userId ? Number(form.userId) : null,
       location: form.location,
-      startsAt: new Date(form.startsAt).toISOString(),
-      endsAt: new Date(form.endsAt).toISOString(),
+      startsAt: new Date(`${form.startDate}T${form.startTime}`).toISOString(),
+      endsAt: new Date(`${form.endDate}T${form.endTime}`).toISOString(),
     };
     try {
       if (editing) await api.patch(`/shifts/${shift.id}`, body);
@@ -273,9 +292,11 @@ function ShiftModal({ shift, day, staff, onClose, onSaved }) {
           {staff.filter((s) => s.status === 'active').map((s) => <option key={s.id} value={s.id}>{s.name} · {s.jobTitle || s.role}</option>)}
         </select>
       </div>
-      <div className="grid cols-2">
-        <div className="field"><label>Начало</label><input type="datetime-local" value={form.startsAt} onChange={set('startsAt')} /></div>
-        <div className="field"><label>Окончание</label><input type="datetime-local" value={form.endsAt} onChange={set('endsAt')} /></div>
+      <div className="shift-time-grid">
+        <div className="field"><label>Дата начала</label><input type="date" value={form.startDate} onChange={set('startDate')} /></div>
+        <div className="field"><label>Время начала</label><input type="time" value={form.startTime} onChange={set('startTime')} /></div>
+        <div className="field"><label>Дата окончания</label><input type="date" value={form.endDate} onChange={set('endDate')} /></div>
+        <div className="field"><label>Время окончания</label><input type="time" value={form.endTime} onChange={set('endTime')} /></div>
       </div>
       <div className="field"><label>Локация</label><input value={form.location} onChange={set('location')} placeholder="Главный зал" /></div>
     </Modal>

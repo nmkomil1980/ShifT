@@ -50,7 +50,7 @@ export default function Staff() {
               <I.Search />
               <input placeholder="Поиск сотрудника…" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
-            <button className="btn" onClick={() => download('/export/staff.csv', 'staff.csv').catch((e) => alert(e.message))}>Экспорт CSV</button>
+            {isManager && <button className="btn" onClick={() => download('/export/staff.csv', 'staff.csv').catch((e) => alert(e.message))}>Экспорт CSV</button>}
             {isManager && <button className="btn primary" onClick={() => setShowAdd(true)}><I.UserPlus width={18} height={18} /> Добавить</button>}
           </div>
         </div>
@@ -80,12 +80,12 @@ export default function Staff() {
         )}
       </div>
 
-      {showAdd && <AddStaffModal onClose={closeAdd} onSaved={() => { closeAdd(); load(); }} />}
+      {showAdd && <AddStaffModal isOwner={user?.role === 'owner'} onClose={closeAdd} onSaved={() => { closeAdd(); load(); }} />}
     </Layout>
   );
 }
 
-function AddStaffModal({ onClose, onSaved }) {
+function AddStaffModal({ isOwner, onClose, onSaved }) {
   const [form, setForm] = useState({ name: '', email: '', jobTitle: '', role: 'employee', phone: '', password: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -111,9 +111,12 @@ function AddStaffModal({ onClose, onSaved }) {
       <div className="grid cols-2">
         <div className="field"><label>Должность</label><input value={form.jobTitle} onChange={set('jobTitle')} placeholder="Официант" /></div>
         <div className="field"><label>Роль</label>
-          <select className="select" value={form.role} onChange={set('role')}>
+          {/* Only the owner can assign roles — the server forces 'employee'
+              for anyone else, so don't offer a choice that won't apply. */}
+          <select className="select" value={form.role} onChange={set('role')} disabled={!isOwner}
+            title={isOwner ? undefined : 'Назначать роли может только владелец'}>
             <option value="employee">Сотрудник</option>
-            <option value="manager">Менеджер</option>
+            {isOwner && <option value="manager">Менеджер</option>}
           </select>
         </div>
       </div>

@@ -19,7 +19,12 @@ export const tokenHash = token => crypto.createHash('sha256').update(token).dige
 export function parseCookies(header = '') {
   return Object.fromEntries(header.split(';').filter(Boolean).map(item => {
     const index = item.indexOf('=');
-    return [item.slice(0, index).trim(), decodeURIComponent(item.slice(index + 1))];
+    const raw = item.slice(index + 1);
+    // A malformed value set by another app on the same domain (e.g. a bare '%')
+    // must not take down every request — keep it verbatim instead of throwing.
+    let value;
+    try { value = decodeURIComponent(raw); } catch { value = raw; }
+    return [item.slice(0, index).trim(), value];
   }));
 }
 
