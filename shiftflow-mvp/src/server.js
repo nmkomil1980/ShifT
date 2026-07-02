@@ -1,8 +1,5 @@
 import './monitoring.js'; // initialise Sentry first (no-op without SENTRY_DSN)
 import http from 'node:http';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { captureException } from './monitoring.js';
 import { q, audit, ensureGeneralChat } from './database.js';
 import { vapidPublicKey, saveSubscription, removeSubscription, sendToUser, sendToUsers } from './push.js';
@@ -13,8 +10,6 @@ import { shiftsCsv, staffCsv, shiftsPdf } from './export.js';
 import { rateLimit } from './ratelimit.js';
 import { clearSessionCookie, parseCookies, passwordHash, passwordMatches, randomToken, sessionCookie, tokenHash } from './security.js';
 
-const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const publicDir = path.join(root, 'public');
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '127.0.0.1';
 const sessionSeconds = Number(process.env.SESSION_DAYS || 14) * 86400;
@@ -502,14 +497,12 @@ async function api(req,res,url) {
   return fail(res,404,'Метод API не найден');
 }
 
-function staticFile(res,pathname) {
-  let relative=pathname==='/'?'index.html':pathname.slice(1);
-  if(!path.extname(relative)) relative='index.html';
-  const file=path.resolve(publicDir,relative);
-  if(!file.startsWith(publicDir)||!fs.existsSync(file)) return fail(res,404,'Файл не найден');
-  const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml'};
-  res.writeHead(200,{'Content-Type':types[path.extname(file)]||'application/octet-stream','Cache-Control':process.env.NODE_ENV==='production'&&path.extname(file)!=='.html'?'public, max-age=3600':'no-cache'});
-  fs.createReadStream(file).pipe(res);
+// The backend is API-only: the web console lives in web-admin (Vite dev server
+// or the Caddy-served build). Anything outside /api redirects there.
+function redirectToApp(res) {
+  const appUrl=process.env.APP_URL||'http://localhost:5173';
+  res.writeHead(302,{Location:appUrl,'Cache-Control':'no-store'});
+  res.end();
 }
 
 const allowedOrigins=(process.env.CORS_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -537,7 +530,7 @@ const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
   applyCors(req,res);
   if(req.method==='OPTIONS'){ res.writeHead(204); return res.end(); }
-  try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else staticFile(res,url.pathname); }
+  try { if(url.pathname.startsWith('/api/')) await api(req,res,url); else redirectToApp(res); }
   catch(error) { console.error(error); captureException(error,{extra:{path:url.pathname,method:req.method}}); fail(res,error.message==='BODY_TOO_LARGE'?413:400,error.message==='INVALID_JSON'?'Некорректный JSON':(error.message||'Ошибка запроса')); }
 });
 attachRealtime(server);
