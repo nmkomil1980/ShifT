@@ -3,8 +3,17 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { initials } from '../lib/util.js';
 import Layout from '../components/Layout.jsx';
+import Select, { TimeSelect } from '../components/Select.jsx';
 
 const roleLabel = { owner: 'Владелец', manager: 'Менеджер', employee: 'Сотрудник' };
+const INDUSTRIES = [
+  { value: '', label: 'Не указана' },
+  { value: 'retail', label: 'Розница' },
+  { value: 'horeca', label: 'Кафе / Ресторан' },
+  { value: 'warehouse', label: 'Склад / Логистика' },
+  { value: 'other', label: 'Другое' }
+];
+const LANGUAGES = [{ value: 'ru', label: 'Русский' }, { value: 'en', label: 'English' }];
 const WEEKDAYS = [
   { n: 1, l: 'Пн' }, { n: 2, l: 'Вт' }, { n: 3, l: 'Ср' }, { n: 4, l: 'Чт' },
   { n: 5, l: 'Пт' }, { n: 6, l: 'Сб' }, { n: 0, l: 'Вс' }
@@ -65,19 +74,10 @@ function CompanyTab() {
           <div className="field"><label>Название компании</label><input value={org.name} onChange={(e) => { setOrg({ ...org, name: e.target.value }); setSaved(false); }} /></div>
           <div className="grid cols-2">
             <div className="field"><label>Отрасль</label>
-              <select className="select" value={s.industry} onChange={(e) => setS({ industry: e.target.value })}>
-                <option value="">Не указана</option>
-                <option value="retail">Розница</option>
-                <option value="horeca">Кафе / Ресторан</option>
-                <option value="warehouse">Склад / Логистика</option>
-                <option value="other">Другое</option>
-              </select>
+              <Select value={s.industry} onChange={(v) => setS({ industry: v })} options={INDUSTRIES} />
             </div>
             <div className="field"><label>Язык по умолчанию</label>
-              <select className="select" value={s.language} onChange={(e) => setS({ language: e.target.value })}>
-                <option value="ru">Русский</option>
-                <option value="en">English</option>
-              </select>
+              <Select value={s.language} onChange={(v) => setS({ language: v })} options={LANGUAGES} />
             </div>
           </div>
         </div>
@@ -95,9 +95,9 @@ function CompanyTab() {
           <div className="field">
             <label>Часы работы заведения</label>
             <div className="hours-row">
-              <input type="time" value={s.openTime || '09:00'} onChange={(e) => setS({ openTime: e.target.value })} />
+              <TimeSelect value={s.openTime || '09:00'} onChange={(v) => setS({ openTime: v })} />
               <span className="hours-sep">—</span>
-              <input type="time" value={s.closeTime || '18:00'} onChange={(e) => setS({ closeTime: e.target.value })} />
+              <TimeSelect value={s.closeTime || '18:00'} onChange={(v) => setS({ closeTime: v })} />
             </div>
           </div>
           <div className="field"><label>Порог переработки (ч/нед)</label><input type="number" min="1" value={s.overtimeThreshold} onChange={(e) => setS({ overtimeThreshold: Number(e.target.value) })} /></div>

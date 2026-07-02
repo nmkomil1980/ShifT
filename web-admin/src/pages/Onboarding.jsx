@@ -2,6 +2,16 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
+import Select, { TimeSelect } from '../components/Select.jsx';
+
+const INDUSTRIES = [
+  { value: '', label: 'Выберите…' },
+  { value: 'retail', label: 'Розница' },
+  { value: 'horeca', label: 'Кафе / Ресторан' },
+  { value: 'warehouse', label: 'Склад / Логистика' },
+  { value: 'other', label: 'Другое' }
+];
+const LANGUAGES = [{ value: 'ru', label: 'Русский' }, { value: 'en', label: 'English' }];
 
 const STEPS = ['Регистрация', 'Компания', 'Роли', 'Команда'];
 const WEEKDAYS = [
@@ -125,19 +135,10 @@ export default function Onboarding() {
             <p className="sub">Базовые настройки и рабочие политики по умолчанию.</p>
             <div className="grid cols-2">
               <div className="field"><label>Отрасль</label>
-                <select className="select" value={company.industry} onChange={setC('industry')}>
-                  <option value="">Выберите…</option>
-                  <option value="retail">Розница</option>
-                  <option value="horeca">Кафе / Ресторан</option>
-                  <option value="warehouse">Склад / Логистика</option>
-                  <option value="other">Другое</option>
-                </select>
+                <Select value={company.industry} onChange={(v) => setCompany({ ...company, industry: v })} options={INDUSTRIES} />
               </div>
               <div className="field"><label>Язык</label>
-                <select className="select" value={company.language} onChange={setC('language')}>
-                  <option value="ru">Русский</option>
-                  <option value="en">English</option>
-                </select>
+                <Select value={company.language} onChange={(v) => setCompany({ ...company, language: v })} options={LANGUAGES} />
               </div>
             </div>
             <div className="field">
@@ -151,9 +152,9 @@ export default function Onboarding() {
             <div className="field">
               <label>Часы работы заведения</label>
               <div className="hours-row">
-                <input type="time" value={company.openTime} onChange={setC('openTime')} />
+                <TimeSelect value={company.openTime} onChange={(v) => setCompany({ ...company, openTime: v })} />
                 <span className="hours-sep">—</span>
-                <input type="time" value={company.closeTime} onChange={setC('closeTime')} />
+                <TimeSelect value={company.closeTime} onChange={(v) => setCompany({ ...company, closeTime: v })} />
               </div>
             </div>
             <div className="field"><label>Порог переработки (ч/нед)</label><input type="number" min="1" value={company.overtimeThreshold} onChange={setC('overtimeThreshold')} /></div>

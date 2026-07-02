@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import { timeRange, dayKey, RU_DAYS, RU_MONTHS, statusMeta, initials } from '../lib/util.js';
 import Layout from '../components/Layout.jsx';
 import Modal from '../components/Modal.jsx';
+import Select, { TimeSelect } from '../components/Select.jsx';
 import * as I from '../components/Icons.jsx';
 
 function startOfWeek(date) {
@@ -287,16 +288,16 @@ function ShiftModal({ shift, day, workHours, staff, onClose, onSaved }) {
       {error && <div className="auth-error">{error}</div>}
       <div className="field"><label>Название</label><input value={form.title} onChange={set('title')} placeholder="Утренняя смена" /></div>
       <div className="field"><label>Сотрудник (необязательно — иначе открытая)</label>
-        <select className="select" value={form.userId} onChange={set('userId')}>
-          <option value="">— Открытая смена —</option>
-          {staff.filter((s) => s.status === 'active').map((s) => <option key={s.id} value={s.id}>{s.name} · {s.jobTitle || s.role}</option>)}
-        </select>
+        <Select value={form.userId} onChange={(v) => setForm({ ...form, userId: v })}
+          placeholder="— Открытая смена —"
+          options={[{ value: '', label: '— Открытая смена —' },
+            ...staff.filter((s) => s.status === 'active').map((s) => ({ value: String(s.id), label: `${s.name} · ${s.jobTitle || s.role}` }))]} />
       </div>
       <div className="shift-time-grid">
         <div className="field"><label>Дата начала</label><input type="date" value={form.startDate} onChange={set('startDate')} /></div>
-        <div className="field"><label>Время начала</label><input type="time" value={form.startTime} onChange={set('startTime')} /></div>
+        <div className="field"><label>Время начала</label><TimeSelect value={form.startTime} onChange={(v) => setForm({ ...form, startTime: v })} /></div>
         <div className="field"><label>Дата окончания</label><input type="date" value={form.endDate} onChange={set('endDate')} /></div>
-        <div className="field"><label>Время окончания</label><input type="time" value={form.endTime} onChange={set('endTime')} /></div>
+        <div className="field"><label>Время окончания</label><TimeSelect value={form.endTime} onChange={(v) => setForm({ ...form, endTime: v })} /></div>
       </div>
       <div className="field"><label>Локация</label><input value={form.location} onChange={set('location')} placeholder="Главный зал" /></div>
     </Modal>

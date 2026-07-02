@@ -9,6 +9,7 @@ const nav = [
   { to: '/', key: 'nav.dashboard', icon: I.Dashboard, end: true },
   { to: '/staff', key: 'nav.staff', icon: I.Staff },
   { to: '/calendar', key: 'nav.calendar', icon: I.Calendar },
+  { to: '/requests', key: 'nav.requests', icon: I.Swap },
   { to: '/analytics', key: 'nav.analytics', icon: I.Analytics },
   { to: '/notifications', key: 'nav.notifications', icon: I.Bell }
 ];

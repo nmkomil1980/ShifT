@@ -6,7 +6,7 @@ import { createContext, useContext, useState, useCallback } from 'react';
 const dict = {
   ru: {
     'nav.dashboard': 'Панель', 'nav.staff': 'Сотрудники', 'nav.calendar': 'Календарь',
-    'nav.analytics': 'Аналитика', 'nav.notifications': 'Уведомления',
+    'nav.analytics': 'Аналитика', 'nav.notifications': 'Уведомления', 'nav.requests': 'Заявки',
     'nav.settings': 'Настройки', 'nav.logout': 'Выйти',
     'action.newShift': 'Новая смена', 'action.quickAdd': 'Быстрое добавление',
     'action.cancel': 'Отмена', 'action.save': 'Сохранить', 'action.add': 'Добавить',
@@ -19,7 +19,7 @@ const dict = {
   },
   en: {
     'nav.dashboard': 'Dashboard', 'nav.staff': 'Staff', 'nav.calendar': 'Calendar',
-    'nav.analytics': 'Analytics', 'nav.notifications': 'Notifications',
+    'nav.analytics': 'Analytics', 'nav.notifications': 'Notifications', 'nav.requests': 'Requests',
     'nav.settings': 'Settings', 'nav.logout': 'Log out',
     'action.newShift': 'New shift', 'action.quickAdd': 'Quick add',
     'action.cancel': 'Cancel', 'action.save': 'Save', 'action.add': 'Add',

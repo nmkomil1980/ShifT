@@ -6,6 +6,7 @@ import { ForgotPassword, ResetPassword, AcceptInvite, VerifyEmail } from './page
 import Dashboard from './pages/Dashboard.jsx';
 import Staff from './pages/Staff.jsx';
 import Calendar from './pages/Calendar.jsx';
+import Requests from './pages/Requests.jsx';
 import Analytics from './pages/Analytics.jsx';
 import Notifications from './pages/Notifications.jsx';
 import Settings from './pages/Settings.jsx';
@@ -33,6 +34,7 @@ export default function App() {
       <Route path="/" element={<Protected><Dashboard /></Protected>} />
       <Route path="/staff" element={<Protected><Staff /></Protected>} />
       <Route path="/calendar" element={<Protected><Calendar /></Protected>} />
+      <Route path="/requests" element={<Protected><Requests /></Protected>} />
       <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
       <Route path="/notifications" element={<Protected><Notifications /></Protected>} />
       <Route path="/settings" element={<Protected><Settings /></Protected>} />

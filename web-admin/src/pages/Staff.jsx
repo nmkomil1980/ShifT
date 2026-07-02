@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import { initials } from '../lib/util.js';
 import Layout from '../components/Layout.jsx';
 import Modal from '../components/Modal.jsx';
+import Select from '../components/Select.jsx';
 import * as I from '../components/Icons.jsx';
 
 const TABS = [
@@ -113,11 +114,9 @@ function AddStaffModal({ isOwner, onClose, onSaved }) {
         <div className="field"><label>Роль</label>
           {/* Only the owner can assign roles — the server forces 'employee'
               for anyone else, so don't offer a choice that won't apply. */}
-          <select className="select" value={form.role} onChange={set('role')} disabled={!isOwner}
-            title={isOwner ? undefined : 'Назначать роли может только владелец'}>
-            <option value="employee">Сотрудник</option>
-            {isOwner && <option value="manager">Менеджер</option>}
-          </select>
+          <Select value={form.role} onChange={(v) => setForm({ ...form, role: v })} disabled={!isOwner}
+            title={isOwner ? undefined : 'Назначать роли может только владелец'}
+            options={[{ value: 'employee', label: 'Сотрудник' }, ...(isOwner ? [{ value: 'manager', label: 'Менеджер' }] : [])]} />
         </div>
       </div>
       <div className="grid cols-2">
