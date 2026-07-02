@@ -63,14 +63,27 @@ export default function Onboarding() {
 
   async function finish() {
     setError(''); setBusy(true);
-    try {
-      for (const inv of invites) {
-        if (inv.name.trim() && inv.email.trim()) {
-          await api.post('/staff', { name: inv.name, email: inv.email.trim(), jobTitle: inv.jobTitle });
-        }
+    // Try every invite: one failure (e.g. an email that already exists) must
+    // not block the rest or leave onboarding stuck. Successfully created rows
+    // are removed so a retry only re-sends the failed ones.
+    const failed = [];
+    const remaining = [];
+    for (const inv of invites) {
+      if (!inv.name.trim() || !inv.email.trim()) continue;
+      try {
+        await api.post('/staff', { name: inv.name, email: inv.email.trim(), jobTitle: inv.jobTitle });
+      } catch (e) {
+        failed.push(`${inv.email.trim()}: ${e.message}`);
+        remaining.push(inv);
       }
+    }
+    setBusy(false);
+    if (failed.length) {
+      setInvites(remaining);
+      setError(`Не удалось пригласить — ${failed.join('; ')}. Исправьте или очистите строки и попробуйте снова.`);
+    } else {
       navigate('/', { replace: true });
-    } catch (e) { setError(e.message); } finally { setBusy(false); }
+    }
   }
 
   return (

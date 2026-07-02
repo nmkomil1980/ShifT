@@ -23,7 +23,9 @@ export default function Calendar() {
   const [anchor, setAnchor] = useState(() => new Date());
   const [shifts, setShifts] = useState(null);
   const [staff, setStaff] = useState([]);
-  const [defaultHours, setDefaultHours] = useState(8);
+  // Working hours of the venue (set during onboarding / in Settings): new
+  // shifts default to this window.
+  const [workHours, setWorkHours] = useState({ open: '09:00', close: '18:00' });
   const [modal, setModal] = useState(null); // { day } to create, { shift } to edit
   const [dropError, setDropError] = useState('');
   const [dragOverKey, setDragOverKey] = useState(null);
@@ -49,7 +51,10 @@ export default function Calendar() {
   useEffect(() => { api.get('/staff').then((d) => setStaff(d.staff)).catch(() => {}); }, []);
   useEffect(() => {
     api.get('/organization')
-      .then((d) => setDefaultHours(d.organization.settings.defaultShiftHours || 8))
+      .then((d) => {
+        const s = d.organization.settings;
+        setWorkHours({ open: s.openTime || '09:00', close: s.closeTime || '18:00' });
+      })
       .catch(() => {});
   }, []);
 
@@ -67,8 +72,9 @@ export default function Calendar() {
     let payload;
     try { payload = JSON.parse(e.dataTransfer.getData('application/json')); } catch { return; }
     if (payload.kind === 'staff') {
-      const start = new Date(day); start.setHours(9, 0, 0, 0);
-      const end = new Date(start.getTime() + defaultHours * 3600000);
+      const start = atTime(day, workHours.open);
+      let end = atTime(day, workHours.close);
+      if (end <= start) end = new Date(end.getTime() + 86400000); // overnight venue
       api.post('/shifts', { title: 'Смена', userId: payload.id, location: '', startsAt: start.toISOString(), endsAt: end.toISOString() })
         .then(load).catch((err) => setDropError(err.message));
     } else if (payload.kind === 'shift') {
@@ -133,8 +139,8 @@ export default function Calendar() {
             <button className="icon-btn" onClick={() => navigate(1)}><I.ChevronRight width={18} height={18} /></button>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <button className="btn" onClick={() => download(`/export/shifts.csv?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'shifts.csv').catch((e) => setDropError(e.message))}>Экспорт CSV</button>
-            <button className="btn" onClick={() => download(`/export/shifts.pdf?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'schedule.pdf').catch((e) => setDropError(e.message))}>PDF</button>
+            {isManager && <button className="btn" onClick={() => download(`/export/shifts.csv?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'shifts.csv').catch((e) => setDropError(e.message))}>Экспорт CSV</button>}
+            {isManager && <button className="btn" onClick={() => download(`/export/shifts.pdf?from=${gridStart.toISOString()}&to=${rangeEnd.toISOString()}`, 'schedule.pdf').catch((e) => setDropError(e.message))}>PDF</button>}
             {isManager && <button className="btn primary" onClick={() => setModal({ day: new Date() })}><I.Plus width={18} height={18} /> Новая смена</button>}
           </div>
         </div>
@@ -207,6 +213,7 @@ export default function Calendar() {
         <ShiftModal
           shift={modal.shift}
           day={modal.day || new Date()}
+          workHours={workHours}
           staff={staff}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); load(); }}
@@ -228,15 +235,21 @@ function splitLocalInput(startIso, endIso) {
   const s = parts(startIso), e = parts(endIso);
   return { startDate: s.date, startTime: s.time, endDate: e.date, endTime: e.time };
 }
-function dayAt(date, hour) { const d = new Date(date); d.setHours(hour, 0, 0, 0); return d; }
+function atTime(date, hhmm) {
+  const [h, m] = String(hhmm || '9:00').split(':').map(Number);
+  const d = new Date(date); d.setHours(h || 0, m || 0, 0, 0); return d;
+}
 
-function ShiftModal({ shift, day, staff, onClose, onSaved }) {
+function ShiftModal({ shift, day, workHours, staff, onClose, onSaved }) {
   const editing = !!shift;
   const [form, setForm] = useState({
     title: shift?.title || 'Смена',
     userId: shift?.user_id ? String(shift.user_id) : '',
     location: shift?.location || '',
-    ...splitLocalInput(shift?.starts_at || dayAt(day, 9), shift?.ends_at || dayAt(day, 17)),
+    ...splitLocalInput(
+      shift?.starts_at || atTime(day, workHours?.open || '09:00'),
+      shift?.ends_at || atTime(day, workHours?.close || '18:00')
+    ),
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');

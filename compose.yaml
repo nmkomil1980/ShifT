@@ -31,6 +31,8 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: "3000"
+      # The API sits behind Caddy here, so X-Forwarded-For is trustworthy.
+      TRUST_PROXY: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-shiftflow}:${POSTGRES_PASSWORD:-shiftflow}@db:5432/${POSTGRES_DB:-shiftflow}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}

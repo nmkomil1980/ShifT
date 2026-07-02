@@ -92,10 +92,15 @@ function CompanyTab() {
               ))}
             </div>
           </div>
-          <div className="grid cols-2">
-            <div className="field"><label>Смена по умолчанию (ч)</label><input type="number" min="1" max="24" value={s.defaultShiftHours} onChange={(e) => setS({ defaultShiftHours: Number(e.target.value) })} /></div>
-            <div className="field"><label>Порог переработки (ч/нед)</label><input type="number" min="1" value={s.overtimeThreshold} onChange={(e) => setS({ overtimeThreshold: Number(e.target.value) })} /></div>
+          <div className="field">
+            <label>Часы работы заведения</label>
+            <div className="hours-row">
+              <input type="time" value={s.openTime || '09:00'} onChange={(e) => setS({ openTime: e.target.value })} />
+              <span className="hours-sep">—</span>
+              <input type="time" value={s.closeTime || '18:00'} onChange={(e) => setS({ closeTime: e.target.value })} />
+            </div>
           </div>
+          <div className="field"><label>Порог переработки (ч/нед)</label><input type="number" min="1" value={s.overtimeThreshold} onChange={(e) => setS({ overtimeThreshold: Number(e.target.value) })} /></div>
           <div className="field">
             <label>Роли</label>
             <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>

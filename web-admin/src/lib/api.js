@@ -53,7 +53,12 @@ export async function download(path, filename) {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`/api${path}`, { headers, credentials: 'include' });
-  if (!res.ok) throw new Error(`Не удалось скачать файл (${res.status})`);
+  if (!res.ok) {
+    // Surface the server's error message when it sent one.
+    let message = `Не удалось скачать файл (${res.status})`;
+    try { message = (await res.json()).error || message; } catch { /* non-JSON body */ }
+    throw new Error(message);
+  }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
